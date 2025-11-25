@@ -163,25 +163,20 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
   }
 
   Future<void> _generateAllSectionsWeeklyPdf() async {
-    // 1) Ensure students are loaded from assets (and attempt local fallback)
+    // 1) Ensure students are loaded
     try {
       await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
-    } catch (e) {
-      // ignore asset import failure
-    }
-    // Fallback local path (development/uploaded file)
+    } catch (e) { }
     try {
       await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx');
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) { }
 
-    // 2) Compute week range (Monday -> Saturday)
+    // 2) Compute week range
     final weekDates = _computeWeekRange(date);
     final start = DateFormat('yyyy-MM-dd').format(weekDates.first);
     final end = DateFormat('yyyy-MM-dd').format(weekDates.last);
 
-    // 3) Fetch attendance rows between start and end
+    // 3) Fetch attendance rows
     final raw = await DBHelper().getStudentAttendanceBetween(start, end);
 
     // 4) Process into per-student rows
@@ -199,8 +194,21 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
       }
       final dateKey = r['date'] as String?;
       final status = r['status'] as String?;
+
       if (dateKey != null && status != null) {
-        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = status;
+        // 🔥 MODIFIED: Convert full words to abbreviations (P / A / OD)
+        String shortStatus;
+        if (status == 'Present') {
+          shortStatus = 'P';
+        } else if (status == 'Absent') {
+          shortStatus = 'A'; // (Note: Use 'b' here if you strictly meant 'b')
+        } else if (status == 'OD') {
+          shortStatus = 'OD';
+        } else {
+          shortStatus = '-';
+        }
+
+        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = shortStatus;
       }
     }
 
@@ -212,7 +220,6 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
         if (sa != sb) return sa.compareTo(sb);
         return (a['reg_no'] as String).compareTo(b['reg_no'] as String);
       });
-
     // 5) Generate PDF bytes
     final pdfBytes = await WeeklyReport.generateAll(weekDates: weekDates, rows: rows);
 
@@ -327,35 +334,66 @@ class CumulativeReportPage extends StatefulWidget {
 
 class _CumulativeReportPageState extends State<CumulativeReportPage> {
   List<Map<String, dynamic>> rows = [];
-  Map<String, dynamic> summary = {'total': 0, 'present': 0, 'absent': 0, 'od': 0, 'percent': 0.0, 'sectionBreakdown': {}};
-
-  Future<void> _load() async {
-    rows = await DBHelper().getCumulativeAttendanceByDate(widget.date);
-    summary = await DBHelper().getCumulativeSummary(widget.date);
-    setState(() {});
-  }
+  Map<String, dynamic> summary = {
+    'total': 0,
+    'present': 0,
+    'absent': 0,
+    'od': 0,
+    'percent': 0.0,
+    'sectionBreakdown': {}
+  };
+  bool isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _prepareCoordinatorData();
+    // 🔥 FIX: Trigger the loading sequence immediately
+    _initPage();
+  }
+
+  Future<void> _initPage() async {
+    // 1. Ensure student master data exists (if needed), but DO NOT clear it blindly.
+    // We removed 'clearStudentsAndSections()' to prevent accidental data loss
+    // during report viewing.
+    await _prepareCoordinatorData();
+
+    // 2. Now fetch the actual report data
+    await _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => isLoading = true);
+    try {
+      final r = await DBHelper().getCumulativeAttendanceByDate(widget.date);
+      final s = await DBHelper().getCumulativeSummary(widget.date);
+      if (mounted) {
+        setState(() {
+          rows = r;
+          summary = s;
+          isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint("Error loading cumulative data: $e");
+      if (mounted) setState(() => isLoading = false);
+    }
   }
 
   Future<void> _prepareCoordinatorData() async {
     try {
-      // 1. Clear old data
-      await DBHelper().clearStudentsAndSections();
+      // FIX: Instead of getStudentCount(), we just try to fetch sections.
+      // If sections exist, we assume students exist.
+      final sections = await DBHelper().getSections();
 
-      // 2. Import fresh master (from assets). Also attempt local fallback path.
-      try {
-        await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
-      } catch (e) {}
-      try {
-        await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx');
-      } catch (e) {}
-
-      // 3. Refresh sections list
-      setState(() {});
+      if (sections.isEmpty) {
+        // If no sections, try to import data
+        try {
+          await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
+        } catch (e) {}
+        try {
+          await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx');
+        } catch (e) {}
+      }
     } catch (e) {
       debugPrint("Coordinator import failed: $e");
     }
@@ -389,11 +427,14 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
 
   @override
   Widget build(BuildContext context) {
-    final sectionBreakdown = summary['sectionBreakdown'] as Map<String, Map<String, int>>? ?? {};
+    final sectionBreakdown =
+        summary['sectionBreakdown'] as Map<String, Map<String, int>>? ?? {};
 
     return Scaffold(
       appBar: AppBar(title: Text('Cumulative Report – ${widget.date}')),
-      body: Column(
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
         children: [
           Container(
             width: double.infinity,
@@ -408,20 +449,27 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
               children: [
                 const Text(
                   'All Sections Combined',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    _StatBox(label: 'Total', value: '${summary['total']}'),
+                    _StatBox(
+                        label: 'Total', value: '${summary['total']}'),
                     const SizedBox(width: 8),
-                    _StatBox(label: 'Present', value: '${summary['present']}'),
+                    _StatBox(
+                        label: 'Present', value: '${summary['present']}'),
                     const SizedBox(width: 8),
-                    _StatBox(label: 'Absent', value: '${summary['absent']}'),
+                    _StatBox(
+                        label: 'Absent', value: '${summary['absent']}'),
                     const SizedBox(width: 8),
                     _StatBox(label: 'OD', value: '${summary['od']}'),
                     const SizedBox(width: 8),
-                    _StatBox(label: 'Percent', value: '${(summary['percent'] as double).toStringAsFixed(1)}%'),
+                    _StatBox(
+                        label: 'Percent',
+                        value:
+                        '${(summary['percent'] as double).toStringAsFixed(1)}%'),
                   ],
                 ),
               ],
@@ -436,13 +484,16 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
                 children: [
                   const Text(
                     'Section-wise Breakdown:',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
                   ...sectionBreakdown.entries.map((entry) {
                     final sectionCode = entry.key;
                     final data = entry.value;
-                    final sectionPercent = data['total']! == 0 ? 0.0 : (data['present']! * 100.0 / data['total']!);
+                    final sectionPercent = data['total']! == 0
+                        ? 0.0
+                        : (data['present']! * 100.0 / data['total']!);
                     return Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(12),
@@ -450,7 +501,8 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
                       decoration: BoxDecoration(
                         color: Colors.grey.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                        border: Border.all(
+                            color: Colors.grey.withOpacity(0.3)),
                       ),
                       child: Row(
                         children: [
@@ -458,14 +510,17 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
                             flex: 2,
                             child: Text(
                               sectionCode,
-                              style: const TextStyle(fontWeight: FontWeight.bold),
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold),
                             ),
                           ),
                           Expanded(child: Text('T: ${data['total']}')),
                           Expanded(child: Text('P: ${data['present']}')),
                           Expanded(child: Text('A: ${data['absent']}')),
                           Expanded(child: Text('OD: ${data['od']}')),
-                          Expanded(child: Text('${sectionPercent.toStringAsFixed(1)}%')),
+                          Expanded(
+                              child: Text(
+                                  '${sectionPercent.toStringAsFixed(1)}%')),
                         ],
                       ),
                     );
@@ -480,26 +535,30 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
 
           Expanded(
             child: rows.isEmpty
-                ? const Center(child: Text('No attendance data yet'))
+                ? const Center(child: Text('No attendance data found for this date.'))
                 : RefreshIndicator(
               onRefresh: _load,
               child: ListView.separated(
                 physics: const AlwaysScrollableScrollPhysics(),
                 itemCount: rows.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
+                separatorBuilder: (_, __) =>
+                const Divider(height: 1),
                 itemBuilder: (_, i) {
                   final r = rows[i];
                   final displayStatus = _getDisplayStatus(r);
                   return ListTile(
                     leading: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
                         color: Colors.blue.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
                         r['section_code'] ?? '',
-                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold),
                       ),
                     ),
                     title: Text(r['name'] ?? ''),
@@ -508,11 +567,15 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
                           'Gender: ${r['gender']} | Quota: ${r['quota']} | H/D: ${r['hd']}',
                     ),
                     trailing: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
                       decoration: BoxDecoration(
-                        color: _getStatusColor(displayStatus).withOpacity(0.1),
+                        color: _getStatusColor(displayStatus)
+                            .withOpacity(0.1),
                         borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: _getStatusColor(displayStatus), width: 1),
+                        border: Border.all(
+                            color: _getStatusColor(displayStatus),
+                            width: 1),
                       ),
                       child: Text(
                         displayStatus,

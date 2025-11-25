@@ -67,8 +67,21 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
       }
       final dateKey = r['date'] as String?;
       final status = r['status'] as String?;
+
       if (dateKey != null && status != null) {
-        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = status;
+        // 🔥 MODIFIED: Abbreviate status for PDF (P, A, OD)
+        String shortStatus;
+        if (status == 'Present') {
+          shortStatus = 'P';
+        } else if (status == 'Absent') {
+          shortStatus = 'A'; // Use 'b' here if you specifically need 'b'
+        } else if (status == 'OD') {
+          shortStatus = 'OD';
+        } else {
+          shortStatus = '-';
+        }
+
+        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = shortStatus;
       }
     }
 
