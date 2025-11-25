@@ -1,3 +1,4 @@
+// db_helper.dart
 import 'dart:async';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -66,10 +67,10 @@ class DBHelper {
         name TEXT,
         gender TEXT,
         quota TEXT,
-        hd TEXT,  -- ✅ new
+        hd TEXT,
         section_id TEXT,
         FOREIGN KEY(section_id) REFERENCES sections(id)
-);
+      );
     ''');
     await db.execute('''
       CREATE TABLE attendance_records (
@@ -78,10 +79,10 @@ class DBHelper {
         section_id TEXT,
         date TEXT,
         slot TEXT,
-        status TEXT, -- Present/Absent
-        od_status TEXT DEFAULT 'Normal', -- Normal/OD
+        status TEXT,
+        od_status TEXT DEFAULT 'Normal',
         time TEXT,
-        source TEXT, -- advisor/coordinator
+        source TEXT,
         created_at TEXT,
         synced INTEGER DEFAULT 0
       );
@@ -89,23 +90,18 @@ class DBHelper {
   }
 
   Future<void> importStudentsFromExcel(String filePath) async {
-
-    // Normalize section code so NRI joins MQ/GQ
-    String normalizeSectionCode(String code, String? quota) {
-      if (quota != null && quota.toUpperCase() == 'NRI') {
-        // Example: CSE-A-NRI → CSE-A
-        return code.replaceAll('-NRI', '');
-      }
-      return code;
-    }
-
+    // This method expects a real filesystem path (useful for dev env)
     final db = await database;
+
+    if (!File(filePath).existsSync()) return;
+
     var bytes = File(filePath).readAsBytesSync();
     var excel = Excel.decodeBytes(bytes);
 
     for (var table in excel.tables.keys) {
-      for (var row in excel.tables[table]!.rows.skip(1)) { // skip header row
-        // Assuming Excel columns: RegNo, Name, SectionCode, Gender, Quota, HD
+      for (var row in excel.tables[table]!.rows.skip(1)) {
+        // Assuming Excel columns: (indexing may vary)
+        // 0: SL, 1: RegNo, 2: Name, 3: SectionCode, 4: Gender, 5: Quota, 6: HD
         final regNo = row[1]?.value.toString();
         final name = row[2]?.value.toString();
         String? sectionCode = row[3]?.value.toString();
@@ -113,12 +109,13 @@ class DBHelper {
         final quota = row[5]?.value.toString();
         final hd = row[6]?.value.toString();
 
-// Normalize section for NRI
-        sectionCode = normalizeSectionCode(sectionCode ?? '', quota);
+        // Normalize NRI
+        if (quota != null && quota.toUpperCase() == 'NRI') {
+          sectionCode = sectionCode?.replaceAll('-NRI', '');
+        }
 
-// Ensure section exists or insert
-        var sec = await db.query(
-            'sections', where: 'code=?', whereArgs: [sectionCode], limit: 1);
+        // Ensure section exists or insert
+        var sec = await db.query('sections', where: 'code=?', whereArgs: [sectionCode], limit: 1);
         String sectionId;
         if (sec.isEmpty) {
           sectionId = 'sec_${DateTime.now().millisecondsSinceEpoch}';
@@ -132,8 +129,63 @@ class DBHelper {
         }
 
         // Insert student
+        final studId = '${regNo}_$sectionId';
         await db.insert('students', {
-          'id': '${regNo}_${sectionId}',
+          'id': studId,
+          'reg_no': regNo,
+          'name': name,
+          'gender': gender,
+          'quota': quota,
+          'hd': hd,
+          'section_id': sectionId,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+    }
+  }
+
+  Future<void> importStudentsFromAsset(String assetPath) async {
+    final db = await database;
+
+    // Normalize section code function
+    String normalizeSectionCode(String code, String? quota) {
+      if (quota != null && quota.toUpperCase() == 'NRI') {
+        return code.replaceAll('-NRI', '');
+      }
+      return code;
+    }
+
+    // Load Excel from assets
+    ByteData data = await rootBundle.load(assetPath);
+    var bytes = data.buffer.asUint8List();
+    var excel = Excel.decodeBytes(bytes);
+
+    for (var table in excel.tables.keys) {
+      for (var row in excel.tables[table]!.rows.skip(1)) {
+        final regNo = row[1]?.value.toString();
+        final name = row[2]?.value.toString();
+        String? sectionCode = row[3]?.value.toString();
+        final gender = row[4]?.value.toString();
+        final quota = row[5]?.value.toString();
+        final hd = row[6]?.value.toString();
+
+        sectionCode = normalizeSectionCode(sectionCode ?? '', quota);
+
+        var sec = await db.query('sections', where: 'code=?', whereArgs: [sectionCode], limit: 1);
+        String sectionId;
+        if (sec.isEmpty) {
+          sectionId = 'sec_${DateTime.now().millisecondsSinceEpoch}';
+          await db.insert('sections', {
+            'id': sectionId,
+            'code': sectionCode,
+            'name': sectionCode,
+          });
+        } else {
+          sectionId = sec.first['id'] as String;
+        }
+
+        final studId = '${regNo}_$sectionId';
+        await db.insert('students', {
+          'id': studId,
           'reg_no': regNo,
           'name': name,
           'gender': gender,
@@ -153,8 +205,7 @@ class DBHelper {
   }
 
   // Dummy Auth
-  Future<Map<String, dynamic>?> auth(String username, String password,
-      String role) async {
+  Future<Map<String, dynamic>?> auth(String username, String password, String role) async {
     final db = await database;
     final res = await db.query(
       'users',
@@ -169,16 +220,25 @@ class DBHelper {
     final db = await database;
     return await db.query(
       'sections',
-      columns:['code'],
-      orderBy:'code ASC',
+      columns: ['code'],
+      orderBy: 'code ASC',
     );
   }
 
-  Future<List<Map<String, dynamic>>> getStudentsBySectionCode(
-      String code) async {
+  Future<List<Map<String, dynamic>>> getAllStudentsWithSection() async {
     final db = await database;
-    final s = await db.query(
-        'sections', where: 'code=?', whereArgs: [code], limit: 1);
+    final sql = '''
+      SELECT st.id as student_id, st.reg_no, st.name, sec.code as section_code
+      FROM students st
+      INNER JOIN sections sec ON sec.id = st.section_id
+      ORDER BY sec.code ASC, st.reg_no ASC;
+    ''';
+    return db.rawQuery(sql);
+  }
+
+  Future<List<Map<String, dynamic>>> getStudentsBySectionCode(String code) async {
+    final db = await database;
+    final s = await db.query('sections', where: 'code=?', whereArgs: [code], limit: 1);
     if (s.isEmpty) return [];
     final sectionId = s.first['id'] as String;
     return await db.query(
@@ -194,30 +254,26 @@ class DBHelper {
         'quota',
         'hd',
         'section_id'
-      ], // ✅
+      ],
     );
   }
 
-  /// ✅ Always overwrite attendance for the same (studentId + date + slot).
   Future<void> upsertAttendance({
     required String studentId,
     required String sectionCode,
     required String date,
     required String slot,
-    required String status, // Present/Absent
-    String odStatus = 'Normal', // Normal/OD
+    required String status,
+    String odStatus = 'Normal',
     required String time,
-    required String source, // advisor/coordinator
+    required String source,
   }) async {
     final db = await database;
 
-    // Find sectionId
-    final s = await db.query(
-        'sections', where: 'code=?', whereArgs: [sectionCode], limit: 1);
+    final s = await db.query('sections', where: 'code=?', whereArgs: [sectionCode], limit: 1);
     if (s.isEmpty) return;
     final sectionId = s.first['id'] as String;
 
-    // ✅ Unique key per (studentId + date + slot)
     final id = '$studentId|$date|$slot';
     final now = DateTime.now().toIso8601String();
 
@@ -240,11 +296,9 @@ class DBHelper {
     );
   }
 
-  Future<List<Map<String, dynamic>>> getAttendanceForSectionByDate(
-      String sectionCode, String date) async {
+  Future<List<Map<String, dynamic>>> getAttendanceForSectionByDate(String sectionCode, String date) async {
     final db = await database;
-    final s = await db.query(
-        'sections', where: 'code=?', whereArgs: [sectionCode], limit: 1);
+    final s = await db.query('sections', where: 'code=?', whereArgs: [sectionCode], limit: 1);
     if (s.isEmpty) return [];
     final sectionId = s.first['id'] as String;
     final sql = '''
@@ -257,17 +311,12 @@ class DBHelper {
     return db.rawQuery(sql, [sectionId, date]);
   }
 
-  Future<Map<String, dynamic>> getSectionSummary(String sectionCode,
-      String date) async {
+  Future<Map<String, dynamic>> getSectionSummary(String sectionCode, String date) async {
     final rows = await getAttendanceForSectionByDate(sectionCode, date);
     final total = rows.length;
-    final present = rows
-        .where((r) => (r['status'] as String) == 'Present')
-        .length;
+    final present = rows.where((r) => (r['status'] as String) == 'Present').length;
     final absent = total - present;
-    final od = rows
-        .where((r) => (r['od_status'] as String?) == 'OD')
-        .length;
+    final od = rows.where((r) => (r['od_status'] as String?) == 'OD').length;
     final percent = total == 0 ? 0.0 : (present * 100.0 / total);
     return {
       'total': total,
@@ -278,9 +327,7 @@ class DBHelper {
     };
   }
 
-  /// Get cumulative attendance data for all sections on a specific date
-  Future<List<Map<String, dynamic>>> getCumulativeAttendanceByDate(
-      String date) async {
+  Future<List<Map<String, dynamic>>> getCumulativeAttendanceByDate(String date) async {
     final db = await database;
     final sql = '''
       SELECT 
@@ -303,42 +350,31 @@ class DBHelper {
     return db.rawQuery(sql, [date]);
   }
 
-  /// Get cumulative summary for all sections on a specific date
   Future<Map<String, dynamic>> getCumulativeSummary(String date) async {
     final rows = await getCumulativeAttendanceByDate(date);
     final total = rows.length;
-    final present = rows
-        .where((r) => (r['status'] as String) == 'Present')
-        .length;
+    final present = rows.where((r) => (r['status'] as String) == 'Present').length;
     final absent = total - present;
-    final od = rows
-        .where((r) => (r['od_status'] as String?) == 'OD')
-        .length;
+    final od = rows.where((r) => (r['od_status'] as String?) == 'OD').length;
     final percent = total == 0 ? 0.0 : (present * 100.0 / total);
 
-    // Section-wise breakdown
     final sectionBreakdown = <String, Map<String, int>>{};
     for (final row in rows) {
       final sectionCode = row['section_code'] as String;
       final status = row['status'] as String;
       final odStatus = row['od_status'] as String? ?? 'Normal';
 
-      sectionBreakdown[sectionCode] ??=
-      {'total': 0, 'present': 0, 'absent': 0, 'od': 0};
-      sectionBreakdown[sectionCode]!['total'] =
-          sectionBreakdown[sectionCode]!['total']! + 1;
+      sectionBreakdown[sectionCode] ??= {'total': 0, 'present': 0, 'absent': 0, 'od': 0};
+      sectionBreakdown[sectionCode]!['total'] = sectionBreakdown[sectionCode]!['total']! + 1;
 
       if (status == 'Present') {
-        sectionBreakdown[sectionCode]!['present'] =
-            sectionBreakdown[sectionCode]!['present']! + 1;
+        sectionBreakdown[sectionCode]!['present'] = sectionBreakdown[sectionCode]!['present']! + 1;
       } else {
-        sectionBreakdown[sectionCode]!['absent'] =
-            sectionBreakdown[sectionCode]!['absent']! + 1;
+        sectionBreakdown[sectionCode]!['absent'] = sectionBreakdown[sectionCode]!['absent']! + 1;
       }
 
       if (odStatus == 'OD') {
-        sectionBreakdown[sectionCode]!['od'] =
-            sectionBreakdown[sectionCode]!['od']! + 1;
+        sectionBreakdown[sectionCode]!['od'] = sectionBreakdown[sectionCode]!['od']! + 1;
       }
     }
 
@@ -352,72 +388,35 @@ class DBHelper {
     };
   }
 
-  /// ✅ Clear attendance (for testing)
   Future<void> clearAttendance() async {
     final db = await database;
     await db.delete('attendance_records');
   }
 
-  Future<void> importStudentsFromAsset(String assetPath) async {
+  /// Get student attendance rows between start and end for all students.
+  /// Returns list of rows:
+  /// { student_id, reg_no, name, section_code, date, status }
+  Future<List<Map<String, dynamic>>> getStudentAttendanceBetween(String startDate, String endDate) async {
     final db = await database;
-
-    // Normalize section code so NRI joins MQ/GQ
-    String normalizeSectionCode(String code, String? quota) {
-      if (quota != null && quota.toUpperCase() == 'NRI') {
-        // Example: CSE-A-NRI → CSE-A
-        return code.replaceAll('-NRI', '');
-      }
-      return code;
-    }
-
-    // Load Excel from assets
-    ByteData data = await rootBundle.load(assetPath);
-    var bytes = data.buffer.asUint8List();
-    var excel = Excel.decodeBytes(bytes);
-
-    for (var table in excel.tables.keys) {
-      for (var row in excel.tables[table]!.rows.skip(1)) { // skip header
-        final regNo = row[1]?.value.toString();
-        final name = row[2]?.value.toString();
-        String? sectionCode = row[3]?.value.toString();
-        final gender = row[4]?.value.toString();
-        final quota = row[5]?.value.toString();
-        final hd = row[6]?.value.toString();
-
-// Normalize section for NRI
-        sectionCode = normalizeSectionCode(sectionCode ?? '', quota);
-
-// Ensure section exists or insert
-        var sec = await db.query(
-            'sections', where: 'code=?', whereArgs: [sectionCode], limit: 1);
-        String sectionId;
-        if (sec.isEmpty) {
-          sectionId = 'sec_${DateTime.now().millisecondsSinceEpoch}';
-          await db.insert('sections', {
-            'id': sectionId,
-            'code': sectionCode,
-            'name': sectionCode,
-          });
-        } else {
-          sectionId = sec.first['id'] as String;
-        }
-
-        // Insert/update student
-        await db.insert('students', {
-          'id': '${regNo}_$sectionId',
-          'reg_no': regNo,
-          'name': name,
-          'gender': gender,
-          'quota': quota,
-          'hd': hd,
-          'section_id': sectionId,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
-    }
+    final sql = '''
+      SELECT 
+        st.id AS student_id,
+        st.reg_no,
+        st.name,
+        sec.code AS section_code,
+        ar.date,
+        ar.status
+      FROM students st
+      INNER JOIN sections sec ON sec.id = st.section_id
+      LEFT JOIN attendance_records ar 
+        ON ar.student_id = st.id AND ar.date BETWEEN ? AND ?
+      ORDER BY sec.code ASC, st.reg_no ASC, ar.date ASC;
+    ''';
+    return db.rawQuery(sql, [startDate, endDate]);
   }
 
   Future<void> _seedData(Database db) async {
-    // ✅ Insert default advisor, coordinator, hod accounts
+    // Insert default advisor, coordinator, hod accounts
     await db.insert('users', {
       'id': 'u1',
       'username': 'advisor1',
@@ -438,4 +437,3 @@ class DBHelper {
     });
   }
 }
-

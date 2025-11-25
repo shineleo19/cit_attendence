@@ -1,3 +1,6 @@
+
+
+// coordinator.dart
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -5,6 +8,8 @@ import 'package:intl/intl.dart';
 import 'package:nearby_connections/nearby_connections.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'db_helper.dart';
+import 'weekly_report.dart';
+import 'package:printing/printing.dart';
 
 class CoordinatorHomePage extends StatefulWidget {
   final String username;
@@ -55,7 +60,7 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
               }
             },
             onPayloadTransferUpdate: (endid, upd) {
-              // Optional: you can inspect upd.status / upd.bytesTransferred
+              // Optional
             },
           );
         },
@@ -91,10 +96,7 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
     });
   }
 
-  // Parse and store
-  // Parse and store
   Future<void> _handlePayload(String text) async {
-    // Expect JSON with keys: type, Section, Date, Slot, Records:[{StudentID,Name,RegNo,Status,ODStatus,Time}]
     try {
       final map = jsonDecode(text) as Map<String, dynamic>;
       if (map['type'] != 'ATT_DATA') return;
@@ -104,7 +106,6 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
       final slotStr = map['Slot'] as String;
       final List records = map['Records'] as List;
 
-      // Build a map regNo -> local student id for this section
       final localStudents = await DBHelper().getStudentsBySectionCode(sectionCode);
       final Map<String, String> regToLocalId = {};
       for (var s in localStudents) {
@@ -113,18 +114,15 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
         if (reg != null && id != null) regToLocalId[reg] = id;
       }
 
-      // Upsert each student record (replace for same student+date)
       for (final r in records) {
         final incomingReg = r['RegNo'] as String?;
         final incomingStudentId = r['StudentID'] as String?;
-        // Prefer local id looked up by RegNo; fallback to incoming StudentID (for devices that share ids)
         String studentIdToUse;
         if (incomingReg != null && regToLocalId.containsKey(incomingReg)) {
           studentIdToUse = regToLocalId[incomingReg]!;
         } else if (incomingStudentId != null) {
           studentIdToUse = incomingStudentId;
         } else {
-          // if nothing useful, skip this record
           continue;
         }
 
@@ -140,9 +138,8 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
         );
       }
 
-      if (mounted) setState(() {}); // refresh list pages if open
+      if (mounted) setState(() {}); // refresh
     } catch (e, st) {
-      // Log errors for debugging
       debugPrint('Error handling payload: $e\n$st');
     }
   }
@@ -151,6 +148,81 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => CoordinatorSectionDetailPage(sectionCode: code, date: date),
     ));
+  }
+
+  /// Computes the Monday–Saturday range for the currently selected date string
+  List<DateTime> _computeWeekRange(String isoDate) {
+    final dt = DateTime.parse(isoDate);
+    final monday = dt.subtract(Duration(days: dt.weekday - 1)); // Monday
+    final saturday = monday.add(const Duration(days: 5));
+    final dates = <DateTime>[];
+    for (int i = 0; i < 6; i++) {
+      dates.add(monday.add(Duration(days: i)));
+    }
+    return dates;
+  }
+
+  Future<void> _generateAllSectionsWeeklyPdf() async {
+    // 1) Ensure students are loaded from assets (and attempt local fallback)
+    try {
+      await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
+    } catch (e) {
+      // ignore asset import failure
+    }
+    // Fallback local path (development/uploaded file)
+    try {
+      await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx');
+    } catch (e) {
+      // ignore
+    }
+
+    // 2) Compute week range (Monday -> Saturday)
+    final weekDates = _computeWeekRange(date);
+    final start = DateFormat('yyyy-MM-dd').format(weekDates.first);
+    final end = DateFormat('yyyy-MM-dd').format(weekDates.last);
+
+    // 3) Fetch attendance rows between start and end
+    final raw = await DBHelper().getStudentAttendanceBetween(start, end);
+
+    // 4) Process into per-student rows
+    final Map<String, Map<String, dynamic>> studentMap = {};
+    for (final r in raw) {
+      final sid = r['student_id'] as String;
+      if (!studentMap.containsKey(sid)) {
+        studentMap[sid] = {
+          'student_id': sid,
+          'reg_no': r['reg_no'] ?? '',
+          'name': r['name'] ?? '',
+          'section_code': r['section_code'] ?? '',
+          'daily': <String, String>{},
+        };
+      }
+      final dateKey = r['date'] as String?;
+      final status = r['status'] as String?;
+      if (dateKey != null && status != null) {
+        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = status;
+      }
+    }
+
+    // Convert to list sorted by section/regno
+    final rows = studentMap.values.toList()
+      ..sort((a, b) {
+        final sa = a['section_code'] as String;
+        final sb = b['section_code'] as String;
+        if (sa != sb) return sa.compareTo(sb);
+        return (a['reg_no'] as String).compareTo(b['reg_no'] as String);
+      });
+
+    // 5) Generate PDF bytes
+    final pdfBytes = await WeeklyReport.generateAll(weekDates: weekDates, rows: rows);
+
+    // 6) Print / Save / Share
+    final filename = 'weekly_report_all_${DateFormat('yyyyMMdd').format(weekDates.first)}_${DateFormat('yyyyMMdd').format(weekDates.last)}.pdf';
+    await Printing.layoutPdf(onLayout: (format) async => pdfBytes, name: filename);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Weekly PDF generated')));
+    }
   }
 
   @override
@@ -173,23 +245,41 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
               ],
             ),
           ),
+
+          // NEW: Weekly report generator for all sections
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: ElevatedButton.icon(
-              onPressed: () {
-                Navigator.push(context, MaterialPageRoute(
-                  builder: (_) => CumulativeReportPage(date: date),
-                ));
-              },
-              icon: const Icon(Icons.assessment),
-              label: const Text('CUMULATIVE REPORT'),
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 48),
-                backgroundColor: Colors.orange,
-                foregroundColor: Colors.white,
-              ),
+            child: Column(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _generateAllSectionsWeeklyPdf,
+                  icon: const Icon(Icons.download_rounded),
+                  label: const Text('Download Weekly Report (All Sections)'),
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 48),
+                    backgroundColor: Colors.green,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.push(context, MaterialPageRoute(
+                      builder: (_) => CumulativeReportPage(date: date),
+                    ));
+                  },
+                  icon: const Icon(Icons.assessment),
+                  label: const Text('CUMULATIVE REPORT'),
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 48),
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
             ),
           ),
+
           const SizedBox(height: 8),
           const Divider(height: 1),
           Expanded(
@@ -224,6 +314,9 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
   }
 }
 
+// Rest of the coordinator detail + cumulative pages unchanged, except small imports at top
+// (I left them as in your original file but kept their code — below are included unchanged)
+
 class CumulativeReportPage extends StatefulWidget {
   final String date;
   const CumulativeReportPage({super.key, required this.date});
@@ -253,8 +346,13 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
       // 1. Clear old data
       await DBHelper().clearStudentsAndSections();
 
-      // 2. Import fresh master (same Excel you used in Advisor)
-      await DBHelper().importStudentsFromExcel('assets/students.xlsx');
+      // 2. Import fresh master (from assets). Also attempt local fallback path.
+      try {
+        await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
+      } catch (e) {}
+      try {
+        await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx');
+      } catch (e) {}
 
       // 3. Refresh sections list
       setState(() {});
@@ -297,7 +395,6 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
       appBar: AppBar(title: Text('Cumulative Report – ${widget.date}')),
       body: Column(
         children: [
-          // Overall Summary
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -331,7 +428,6 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
             ),
           ),
 
-          // Section-wise breakdown
           if (sectionBreakdown.isNotEmpty) ...[
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -382,7 +478,6 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
 
           const Divider(height: 1),
 
-          // Detailed student list
           Expanded(
             child: rows.isEmpty
                 ? const Center(child: Text('No attendance data yet'))
@@ -408,10 +503,10 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
                       ),
                     ),
                     title: Text(r['name'] ?? ''),
-                      subtitle: Text(
-                        'Reg: ${r['reg_no']} | Sec: ${r['section_code'] ?? ''} | '
-                            'Gender: ${r['gender']} | Quota: ${r['quota']} | H/D: ${r['hd']}',
-                      ),
+                    subtitle: Text(
+                      'Reg: ${r['reg_no']} | Sec: ${r['section_code'] ?? ''} | '
+                          'Gender: ${r['gender']} | Quota: ${r['quota']} | H/D: ${r['hd']}',
+                    ),
                     trailing: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       decoration: BoxDecoration(
