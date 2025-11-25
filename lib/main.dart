@@ -39,8 +39,70 @@ class _RolePickerPageState extends State<RolePickerPage> {
     () async {
       await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
       await DBHelper().database;
-      await DBHelper().clearAttendance();
+      // Note: I removed the auto-clear on init so data persists between restarts
+      // await DBHelper().clearAttendance();
     }();
+  }
+
+  // 🔥 Helper to show the confirmation dialog
+  void _showClearDataDialog(BuildContext context) {
+    final TextEditingController confirmController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Clear Database?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('This will permanently delete all attendance records.'),
+              const SizedBox(height: 16),
+              const Text('Type "confirm" to proceed:',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: confirmController,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'confirm',
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                // ✅ Check if user typed "confirm"
+                if (confirmController.text.trim() == 'confirm') {
+                  Navigator.pop(ctx); // Close dialog
+
+                  await DBHelper().clearAttendance();
+
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Attendance table cleared ✅")),
+                    );
+                  }
+                } else {
+                  // Optional: Show error if text doesn't match (or just do nothing)
+                  ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Incorrect text. Data NOT cleared."))
+                  );
+                }
+              },
+              child: const Text('CLEAR DATA', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -51,14 +113,9 @@ class _RolePickerPageState extends State<RolePickerPage> {
         actions: [
           IconButton(
             tooltip: "Clear attendance (testing)",
-            icon: const Icon(Icons.delete_forever),
-            onPressed: () async {
-              await DBHelper().clearAttendance();
-              // ignore: use_build_context_synchronously
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("Attendance table cleared ✅")),
-              );
-            },
+            icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
+            // ✅ Calls the new dialog function
+            onPressed: () => _showClearDataDialog(context),
           )
         ],
       ),
