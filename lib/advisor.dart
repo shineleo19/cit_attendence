@@ -1,13 +1,9 @@
-// advisor.dart
 import 'dart:convert';
-import 'dart:typed_data';
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:nearby_connections/nearby_connections.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'db_helper.dart';
+import 'package:http/http.dart' as http;
 import 'package:printing/printing.dart';
+import 'db_helper.dart';
 import 'weekly_report.dart';
 
 class AdvisorHomePage extends StatefulWidget {
@@ -27,14 +23,12 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
     _sectionsFuture = DBHelper().getSections();
   }
 
-  /// Monday->Saturday for a given date (today used)
   List<DateTime> _computeWeekRangeForDate(DateTime dt) {
     final monday = dt.subtract(Duration(days: dt.weekday - 1));
     return List.generate(6, (i) => monday.add(Duration(days: i)));
   }
 
   Future<void> _generateSectionWeeklyPdf(String sectionCode) async {
-    // ensure students loaded (as coordinator we did it earlier; still try)
     try {
       await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
     } catch (e) {}
@@ -42,16 +36,13 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
       await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx');
     } catch (e) {}
 
-    // week based on today
     final today = DateTime.now();
     final weekDates = _computeWeekRangeForDate(today);
     final start = DateFormat('yyyy-MM-dd').format(weekDates.first);
     final end = DateFormat('yyyy-MM-dd').format(weekDates.last);
 
-    // Fetch raw attendance for the range (only rows that match section)
     final allRaw = await DBHelper().getStudentAttendanceBetween(start, end);
 
-    // Filter by sectionCode and build student maps
     final Map<String, Map<String, dynamic>> studentMap = {};
     for (final r in allRaw) {
       if ((r['section_code'] as String?) != sectionCode) continue;
@@ -67,20 +58,12 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
       }
       final dateKey = r['date'] as String?;
       final status = r['status'] as String?;
-
       if (dateKey != null && status != null) {
-        // 🔥 MODIFIED: Abbreviate status for PDF (P, A, OD)
         String shortStatus;
-        if (status == 'Present') {
-          shortStatus = 'P';
-        } else if (status == 'Absent') {
-          shortStatus = 'A'; // Use 'b' here if you specifically need 'b'
-        } else if (status == 'OD') {
-          shortStatus = 'OD';
-        } else {
-          shortStatus = '-';
-        }
-
+        if (status == 'Present') shortStatus = 'P';
+        else if (status == 'Absent') shortStatus = 'A';
+        else if (status == 'OD') shortStatus = 'OD';
+        else shortStatus = '-';
         (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = shortStatus;
       }
     }
@@ -96,10 +79,6 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
 
     final filename = 'weekly_report_${sectionCode}_${DateFormat('yyyyMMdd').format(weekDates.first)}.pdf';
     await Printing.layoutPdf(onLayout: (format) async => pdfBytes, name: filename);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Section $sectionCode PDF generated')));
-    }
   }
 
   @override
@@ -124,15 +103,22 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
                   children: [
                     IconButton(
                       icon: const Icon(Icons.download_rounded),
-                      tooltip: 'Download weekly report (this section)',
+                      tooltip: 'Download weekly report',
                       onPressed: () => _generateSectionWeeklyPdf(s['code'] as String),
                     ),
                     const Icon(Icons.chevron_right),
                   ],
                 ),
-                onTap: () {
+                onTap: () async {
+                  // 🔥 Pre-fetch students before navigating to AdvisorPage
+                  final students = await DBHelper().getStudentsBySectionCode(s['code']);
+                  if (!context.mounted) return;
                   Navigator.push(context, MaterialPageRoute(
-                    builder: (_) => AdvisorMarkPage(sectionCode: s['code']),
+                    builder: (_) => AdvisorPage(
+                      section: s['code'],
+                      username: widget.username,
+                      students: students,
+                    ),
                   ));
                 },
               );
@@ -144,250 +130,87 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
   }
 }
 
-// The rest of the advisor file (report page, mark page) is unchanged except imports at top.
-// Below is the existing AdvisorReportPage and AdvisorMarkPage (unchanged from your original file),
-// with minor additions removed for brevity — keep the rest of your original implementations.
-// For completeness I paste them unchanged (from your provided code):
+// 🔥 Updated AdvisorPage (HTTP version)
+class AdvisorPage extends StatefulWidget {
+  final String section;
+  final String username;
+  final List<Map<String, dynamic>> students;
+  final Function()? onSubmitComplete;
 
-class AdvisorReportPage extends StatefulWidget {
-  final String sectionCode;
-  final String date;
-  const AdvisorReportPage({super.key, required this.sectionCode, required this.date});
+  const AdvisorPage({
+    super.key,
+    required this.section,
+    required this.students,
+    this.onSubmitComplete,
+    required this.username,
+  });
 
   @override
-  State<AdvisorReportPage> createState() => _AdvisorReportPageState();
+  State<AdvisorPage> createState() => _AdvisorPageState();
 }
 
-class _AdvisorReportPageState extends State<AdvisorReportPage> {
-  List<Map<String, dynamic>> rows = [];
-  Map<String, dynamic> summary = {'total': 0, 'present': 0, 'absent': 0, 'od': 0, 'percent': 0.0};
+class _AdvisorPageState extends State<AdvisorPage> {
+  String slot = "FN";
+  late DateTime selectedDate;
+  late List<Map<String, dynamic>> students;
 
-  Future<void> _load() async {
-    rows = await DBHelper().getAttendanceForSectionByDate(widget.sectionCode, widget.date);
-    summary = await DBHelper().getSectionSummary(widget.sectionCode, widget.date);
-    setState(() {});
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  String _getDisplayStatus(Map<String, dynamic> record) {
-    final status = record['status'] as String? ?? 'Present';
-    final odStatus = record['od_status'] as String? ?? 'Normal';
-
-    if (status == 'Absent') {
-      return 'Absent';
-    } else if (odStatus == 'OD') {
-      return 'OD';
-    } else {
-      return 'Present';
-    }
-  }
-
-  Color _getStatusColor(String displayStatus) {
-    switch (displayStatus) {
-      case 'Present':
-        return Colors.green;
-      case 'Absent':
-        return Colors.red;
-      case 'OD':
-        return Colors.blue;
-      default:
-        return Colors.grey;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Report – ${widget.sectionCode}'),
-        actions: [
-          IconButton(
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.close),
-            tooltip: 'Close Report',
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            margin: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.blue.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.blue.withOpacity(0.3)),
-            ),
-            child: Column(
-              children: [
-                const Text(
-                  'Attendance Report',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Section: ${widget.sectionCode} | Date: ${widget.date}',
-                  style: const TextStyle(fontSize: 14, color: Colors.black87),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(
-              children: [
-                _StatBox(label: 'Total', value: '${summary['total']}'),
-                const SizedBox(width: 8),
-                _StatBox(label: 'Present', value: '${summary['present']}'),
-                const SizedBox(width: 8),
-                _StatBox(label: 'Absent', value: '${summary['absent']}'),
-                const SizedBox(width: 8),
-                _StatBox(label: 'OD', value: '${summary['od']}'),
-                const SizedBox(width: 8),
-                _StatBox(label: 'Percent', value: '${(summary['percent'] as double).toStringAsFixed(1)}%'),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          const Divider(height: 1),
-          Expanded(
-            child: rows.isEmpty
-                ? const Center(child: Text('No data available'))
-                : ListView.separated(
-              itemCount: rows.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (_, i) {
-                final r = rows[i];
-                final displayStatus = _getDisplayStatus(r);
-                return ListTile(
-                  title: Text(r['name'] ?? ''),
-                  subtitle: Text(r['reg_no'] ?? ''),
-                  trailing: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: _getStatusColor(displayStatus).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: _getStatusColor(displayStatus), width: 1),
-                    ),
-                    child: Text(
-                      displayStatus,
-                      style: TextStyle(
-                        color: _getStatusColor(displayStatus),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: ElevatedButton.icon(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.arrow_back),
-                label: const Text('Back to Sections'),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 48),
-                  backgroundColor: Colors.grey[600],
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class AdvisorMarkPage extends StatefulWidget {
-  final String sectionCode;
-  const AdvisorMarkPage({super.key, required this.sectionCode});
-
-  @override
-  State<AdvisorMarkPage> createState() => _AdvisorMarkPageState();
-}
-
-class _AdvisorMarkPageState extends State<AdvisorMarkPage> {
-  final df = DateFormat('yyyy-MM-dd');
-  String date = DateFormat('yyyy-MM-dd').format(DateTime.now());
-  String slot = 'FN';
-  List<Map<String, dynamic>> students = [];
   Map<String, String> status = {};
   Map<String, String> odStatus = {};
-  bool loading = true;
-  bool discovering = false;
-  bool attendanceSubmitted = false;
 
-  final Strategy strategy = Strategy.P2P_STAR;
-  final String serviceId = 'com.attendance_cit.app';
-  Timer? _discoverTimeout;
+  final TextEditingController _ipController = TextEditingController();
+  final TextEditingController _portController = TextEditingController(text: "4040");
+  bool isSubmitting = false;
 
   @override
   void initState() {
     super.initState();
-    _loadStudents();
-  }
+    students = widget.students;
+    selectedDate = DateTime.now();
 
-  Future<void> _loadStudents() async {
-    final list = await DBHelper().getStudentsBySectionCode(widget.sectionCode);
-    final statusMap = <String, String>{};
-    final odStatusMap = <String, String>{};
-    for (var s in list) {
-      statusMap[s['id'] as String] = 'Present';
-      odStatusMap[s['id'] as String] = 'Normal';
-    }
-    setState(() {
-      students = list;
-      status = statusMap;
-      odStatus = odStatusMap;
-      loading = false;
-    });
-  }
-
-  Future<void> _markAll(String newStatus) async {
-    final statusMap = <String, String>{};
-    final odStatusMap = <String, String>{};
     for (var s in students) {
-      statusMap[s['id'] as String] = newStatus;
-      odStatusMap[s['id'] as String] = 'Normal';
+      String id = s['id'];
+      status[id] = 'Present';
+      odStatus[id] = 'Normal';
     }
-    setState(() {
-      status = statusMap;
-      odStatus = odStatusMap;
-    });
   }
 
   Future<void> _saveLocally() async {
-    final nowIso = DateTime.now().toIso8601String();
-    for (var s in students) {
-      final id = s['id'] as String;
-      await DBHelper().upsertAttendance(
-        studentId: id,
-        sectionCode: widget.sectionCode,
-        date: date,
-        slot: slot,
-        status: status[id] ?? 'Present',
-        odStatus: odStatus[id] ?? 'Normal',
-        time: nowIso,
-        source: 'advisor',
-      );
+    // 🔥 Integrated SQLite saving logic so data persists offline
+    try {
+      final dateStr = DateFormat('yyyy-MM-dd').format(selectedDate);
+      for (var s in students) {
+        final id = s['id'] as String;
+        await DBHelper().upsertAttendance(
+          studentId: id,
+          sectionCode: widget.section,
+          date: dateStr,
+          slot: slot,
+          status: status[id] ?? 'Present',
+          odStatus: odStatus[id] ?? 'Normal',
+          time: DateTime.now().toIso8601String(),
+          source: 'advisor_http',
+        );
+      }
+      debugPrint("Locally saved attendance for ${widget.section}");
+    } catch (e) {
+      debugPrint("Error saving locally: $e");
     }
   }
 
   Future<void> _submitToCoordinator() async {
+    if (_ipController.text.trim().isEmpty) {
+      _showMessage("⚠ Enter Coordinator IP", Colors.orange);
+      return;
+    }
+
+    setState(() => isSubmitting = true);
+
+    // 1. Save to local DB first
     await _saveLocally();
 
-    final records = students.map((s) {
+    final url = "http://${_ipController.text.trim()}:${_portController.text.trim()}/submit_attendance";
+
+    final recordList = students.map((s) {
       final id = s['id'] as String;
       return {
         'StudentID': id,
@@ -403,261 +226,305 @@ class _AdvisorMarkPageState extends State<AdvisorMarkPage> {
       };
     }).toList();
 
-    final payload = jsonEncode({
-      'type': 'ATT_DATA',
-      'Section': widget.sectionCode,
-      'Date': date,
-      'Slot': slot,
-      'Records': records,
-    });
+    final payload = {
+      "Date": DateFormat('yyyy-MM-dd').format(selectedDate),
+      "Slot": slot,
+      "Section": widget.section,
+      "Records": recordList,
+    };
 
     try {
-      setState(() => discovering = true);
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode(payload),
+      ).timeout(const Duration(seconds: 5));
 
-      await Permission.location.request();
-      await Permission.bluetoothScan.request();
-      await Permission.bluetoothConnect.request();
-      await Permission.bluetoothAdvertise.request();
-      await Permission.nearbyWifiDevices.request();
-
-      await Nearby().stopDiscovery();
-      await Nearby().stopAdvertising();
-
-      bool started = await Nearby().startDiscovery(
-        'Advisor-${DateTime.now().millisecondsSinceEpoch}',
-        strategy,
-        serviceId: serviceId,
-        onEndpointFound: (id, name, serviceIdFound) async {
-          if (name.startsWith('Coordinator')) {
-            await Nearby().requestConnection(
-              'Advisor',
-              id,
-              onConnectionInitiated: (id, info) async {
-                await Nearby().acceptConnection(
-                  id,
-                  onPayLoadRecieved: (endid, pl) {},
-                  onPayloadTransferUpdate: (endid, upd) {},
-                );
-              },
-              onConnectionResult: (id, status) async {
-                if (status == Status.CONNECTED) {
-                  final bytes = Uint8List.fromList(payload.codeUnits);
-                  await Nearby().sendBytesPayload(id, bytes);
-                  await Future.delayed(const Duration(milliseconds: 300));
-                  await Nearby().disconnectFromEndpoint(id);
-                  await Nearby().stopDiscovery();
-                  if (mounted) {
-                    setState(() => attendanceSubmitted = true);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Attendance sent to Coordinator')),
-                    );
-                  }
-                }
-              },
-              onDisconnected: (id) {},
-            );
-          }
-        },
-        onEndpointLost: (id) {},
-      );
-
-      _discoverTimeout?.cancel();
-      _discoverTimeout = Timer(const Duration(seconds: 20), () async {
-        if (mounted && discovering) {
-          await Nearby().stopDiscovery();
-          setState(() => discovering = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No Coordinator found. Make sure session is started.')),
-          );
+      if (response.statusCode == 200) {
+        _showMessage("✔ Attendance submitted!", Colors.green);
+        if (widget.onSubmitComplete != null) {
+          widget.onSubmitComplete!();
         }
-      });
-
-      if (!started) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Discovery failed. Try again.')),
-        );
+      } else {
+        _showMessage("❌ Submit Failed (${response.statusCode})", Colors.redAccent);
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Send failed: $e')),
-      );
+      _showMessage("❌ Connection Error: $e", Colors.redAccent);
     } finally {
-      if (mounted) setState(() => discovering = false);
-      _discoverTimeout?.cancel();
+      if (mounted) setState(() => isSubmitting = false);
     }
   }
 
-  @override
-  void dispose() {
-    _discoverTimeout?.cancel();
-    Nearby().stopDiscovery();
-    super.dispose();
+  void _showMessage(String msg, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: color,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _toggleStatus(String id) {
+    setState(() {
+      if (status[id] == 'Present') {
+        status[id] = 'Absent';
+      } else {
+        status[id] = 'Present';
+      }
+      // If absent, clear OD
+      if (status[id] == 'Absent') {
+        odStatus[id] = 'Normal';
+      }
+    });
+  }
+
+  void _toggleOD(String id) {
+    setState(() {
+      if (odStatus[id] == "Normal") {
+        odStatus[id] = "OD";
+        // If OD, ensure marked present implicitly or handle as needed
+      } else {
+        odStatus[id] = "Normal";
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (loading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
     return Scaffold(
-      appBar: AppBar(title: Text('Mark – ${widget.sectionCode}')),
+      appBar: AppBar(
+        title: Text("Advisor – ${widget.section}"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.analytics),
+            tooltip: "View Report",
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => AdvisorReportPage(
+                      sectionCode: widget.section,
+                      date: DateFormat('yyyy-MM-dd').format(selectedDate)
+                  )
+              ));
+            },
+          )
+        ],
+      ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Expanded(child: Text('Date: $date')),
-                DropdownButton<String>(
-                  value: slot,
-                  items: const [
-                    DropdownMenuItem(value: 'FN', child: Text('FN')),
-                    DropdownMenuItem(value: 'AN', child: Text('AN')),
-                  ],
-                  onChanged: (v) => setState(() => slot = v!),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(
-              children: [
-                ElevatedButton(onPressed: () => _markAll('Present'), child: const Text('Mark All Present')),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: () => _markAll('Absent'),
-                  child: const Text('Mark All Absent'),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: ListView.separated(
-              itemCount: students.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (_, i) {
-                final s = students[i];
-                final id = s['id'] as String;
-                final st = status[id] ?? 'Present';
-                final od = odStatus[id] ?? 'Normal';
-                final isAbsent = st == 'Absent';
+          _buildDateSlotRow(),
+          _buildCoordinatorIPInput(),
+          Expanded(child: _buildStudentList()),
+          _buildSubmitButton(),
+        ],
+      ),
+    );
+  }
 
-                return ListTile(
-                  title: Text('${s['name']}'),
-                  subtitle: Text('${s['reg_no']}'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (!isAbsent) ...[
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: (od == 'OD') ? Colors.blue : Colors.grey[300],
-                            foregroundColor: (od == 'OD') ? Colors.white : Colors.black87,
-                            minimumSize: const Size(50, 36),
-                          ),
-                          onPressed: () {
-                            setState(() {
-                              odStatus[id] = (od == 'Normal') ? 'OD' : 'Normal';
-                            });
-                          },
-                          child: const Text('OD'),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: (st == 'Absent') ? Colors.red : Colors.green,
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size(80, 36),
-                        ),
-                        onPressed: () {
-                          setState(() {
-                            status[id] = (st == 'Present') ? 'Absent' : 'Present';
-                            if (status[id] == 'Absent') {
-                              odStatus[id] = 'Normal';
-                            }
-                          });
-                        },
-                        child: Text(st == 'Present' ? 'PRESENT' : 'ABSENT'),
-                      ),
-                    ],
-                  ),
+  Widget _buildDateSlotRow() {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: selectedDate,
+                  firstDate: DateTime(2020),
+                  lastDate: DateTime(2100),
                 );
+                if (picked != null) {
+                  setState(() => selectedDate = picked);
+                }
               },
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: discovering ? null : _submitToCoordinator,
-                    icon: const Icon(Icons.send),
-                    label: Text(discovering ? 'Sending…' : 'Submit Attendance'),
-                    style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 48)),
-                  ),
-                  if (attendanceSubmitted) ...[
-                    const SizedBox(height: 8),
-                    ElevatedButton.icon(
-                      onPressed: () {
-                        Navigator.push(context, MaterialPageRoute(
-                          builder: (_) => AdvisorReportPage(
-                            sectionCode: widget.sectionCode,
-                            date: date,
-                          ),
-                        ));
-                      },
-                      icon: const Icon(Icons.analytics),
-                      label: const Text('View Report'),
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: const Size(double.infinity, 48),
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                      ),
-                    ),
-                  ],
-                ],
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.grey),
+                ),
+                child: Text(
+                  DateFormat('yyyy-MM-dd').format(selectedDate),
+                  textAlign: TextAlign.center,
+                ),
               ),
             ),
+          ),
+          const SizedBox(width: 12),
+          DropdownButton<String>(
+            value: slot,
+            items: ["FN", "AN"].map((e) {
+              return DropdownMenuItem(value: e, child: Text(e));
+            }).toList(),
+            onChanged: (v) => setState(() => slot = v!),
           ),
         ],
       ),
     );
   }
+
+  Widget _buildCoordinatorIPInput() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Coordinator Hotspot IP:", style: TextStyle(fontWeight: FontWeight.bold)),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ipController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                      hintText: "e.g., 192.168.43.1",
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 70,
+                child: TextField(
+                  controller: _portController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStudentList() {
+    return ListView.builder(
+      itemCount: students.length,
+      itemBuilder: (context, i) {
+        final s = students[i];
+        final id = s['id'];
+        final isAbsent = status[id] == 'Absent';
+        final isOD = odStatus[id] == 'OD';
+
+        return Card(
+          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+          child: ListTile(
+            title: Text("${s['name']} (${s['reg_no']})"),
+            subtitle: Text("Gender: ${s['gender']} | Quota: ${s['quota']}"),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GestureDetector(
+                  onTap: () => _toggleStatus(id),
+                  child: Chip(
+                    label: Text(isAbsent ? 'ABSENT' : 'PRESENT',
+                        style: const TextStyle(color: Colors.white, fontSize: 12)),
+                    backgroundColor: isAbsent ? Colors.red : Colors.green,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () => _toggleOD(id),
+                  child: Chip(
+                    label: Text(isOD ? 'OD' : 'Normal',
+                        style: TextStyle(color: isOD ? Colors.white : Colors.black87, fontSize: 12)),
+                    backgroundColor: isOD ? Colors.blue : Colors.grey[300],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSubmitButton() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      width: double.infinity,
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          backgroundColor: Colors.green,
+        ),
+        onPressed: isSubmitting ? null : _submitToCoordinator,
+        child: Text(isSubmitting ? "Sending..." : "Submit to Coordinator",
+            style: const TextStyle(fontSize: 18, color: Colors.white)),
+      ),
+    );
+  }
 }
 
-class _StatBox extends StatelessWidget {
-  final String label;
-  final String value;
+// Re-including ReportPage so analytics button works
+class AdvisorReportPage extends StatefulWidget {
+  final String sectionCode;
+  final String date;
+  const AdvisorReportPage({super.key, required this.sectionCode, required this.date});
 
-  const _StatBox({super.key, required this.label, required this.value});
+  @override
+  State<AdvisorReportPage> createState() => _AdvisorReportPageState();
+}
+
+class _AdvisorReportPageState extends State<AdvisorReportPage> {
+  List<Map<String, dynamic>> rows = [];
+  Map<String, dynamic> summary = {'total': 0, 'present': 0, 'absent': 0, 'od': 0, 'percent': 0.0};
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    rows = await DBHelper().getAttendanceForSectionByDate(widget.sectionCode, widget.date);
+    summary = await DBHelper().getSectionSummary(widget.sectionCode, widget.date);
+    if(mounted) setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.blue.shade50,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.blue.shade200),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+    return Scaffold(
+      appBar: AppBar(title: Text('Report – ${widget.sectionCode}')),
+      body: Column(
         children: [
-          Text(
-            label,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 13,
+          Container(
+            padding: const EdgeInsets.all(16),
+            margin: const EdgeInsets.all(12),
+            color: Colors.blue.withOpacity(0.1),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                Text("Total: ${summary['total']}"),
+                Text("Present: ${summary['present']}"),
+                Text("Absent: ${summary['absent']}"),
+                Text("OD: ${summary['od']}"),
+                Text("${(summary['percent'] as double).toStringAsFixed(1)}%"),
+              ],
             ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: const TextStyle(
-              fontWeight: FontWeight.w600,
-              fontSize: 16,
+          Expanded(
+            child: ListView.separated(
+              itemCount: rows.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, i) {
+                final r = rows[i];
+                final status = r['status'] == 'Absent' ? 'Absent' : (r['od_status'] == 'OD' ? 'OD' : 'Present');
+                Color color = status == 'Absent' ? Colors.red : (status == 'OD' ? Colors.blue : Colors.green);
+                return ListTile(
+                  title: Text(r['name'] ?? ''),
+                  subtitle: Text(r['reg_no'] ?? ''),
+                  trailing: Text(status, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+                );
+              },
             ),
           ),
         ],

@@ -19,12 +19,12 @@ class AttendanceApp extends StatelessWidget {
         colorSchemeSeed: Colors.blue,
         useMaterial3: true,
       ),
-      home: const RolePickerPage(), // ✅ start with role picker
+      home: const RolePickerPage(), // Start with role picker
     );
   }
 }
 
-// 🔥 Changed from Stateless → Stateful
+// Stateful because DB is prepared here
 class RolePickerPage extends StatefulWidget {
   const RolePickerPage({super.key});
 
@@ -39,12 +39,11 @@ class _RolePickerPageState extends State<RolePickerPage> {
     () async {
       await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
       await DBHelper().database;
-      // Note: I removed the auto-clear on init so data persists between restarts
-      // await DBHelper().clearAttendance();
+      // Removed clearAttendance() — data now persists offline
     }();
   }
 
-  // 🔥 Helper to show the confirmation dialog
+  // Confirm dialog for clearing SQLite data
   void _showClearDataDialog(BuildContext context) {
     final TextEditingController confirmController = TextEditingController();
 
@@ -59,15 +58,18 @@ class _RolePickerPageState extends State<RolePickerPage> {
             children: [
               const Text('This will permanently delete all attendance records.'),
               const SizedBox(height: 16),
-              const Text('Type "confirm" to proceed:',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text(
+                'Type "confirm" to proceed:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: 8),
               TextField(
                 controller: confirmController,
                 decoration: const InputDecoration(
                   border: OutlineInputBorder(),
                   hintText: 'confirm',
-                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  contentPadding:
+                  EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 ),
               ),
             ],
@@ -79,25 +81,26 @@ class _RolePickerPageState extends State<RolePickerPage> {
             ),
             TextButton(
               onPressed: () async {
-                // ✅ Check if user typed "confirm"
                 if (confirmController.text.trim() == 'confirm') {
-                  Navigator.pop(ctx); // Close dialog
-
+                  Navigator.pop(ctx);
                   await DBHelper().clearAttendance();
 
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Attendance table cleared ✅")),
+                      const SnackBar(
+                          content: Text("Attendance table cleared ✅")),
                     );
                   }
                 } else {
-                  // Optional: Show error if text doesn't match (or just do nothing)
                   ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Incorrect text. Data NOT cleared."))
+                    const SnackBar(
+                      content: Text("Incorrect text. Data NOT cleared."),
+                    ),
                   );
                 }
               },
-              child: const Text('CLEAR DATA', style: TextStyle(color: Colors.red)),
+              child:
+              const Text('CLEAR DATA', style: TextStyle(color: Colors.red)),
             ),
           ],
         );
@@ -114,9 +117,8 @@ class _RolePickerPageState extends State<RolePickerPage> {
           IconButton(
             tooltip: "Clear attendance (testing)",
             icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
-            // ✅ Calls the new dialog function
             onPressed: () => _showClearDataDialog(context),
-          )
+          ),
         ],
       ),
       body: Padding(
@@ -126,8 +128,10 @@ class _RolePickerPageState extends State<RolePickerPage> {
           children: [
             const Icon(Icons.school, size: 72, color: Colors.blue),
             const SizedBox(height: 24),
-            const Text('Select Role',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const Text(
+              'Select Role',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 16),
             _roleBtn(context, 'Advisor', Icons.person, 'advisor'),
             const SizedBox(height: 12),
@@ -158,8 +162,8 @@ class _RolePickerPageState extends State<RolePickerPage> {
 }
 
 class LoginPage extends StatefulWidget {
-  final String role; // advisor/coordinator/hod
-  const LoginPage({super.key, required this.role}); // ✅ fixed
+  final String role;
+  const LoginPage({super.key, required this.role});
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -176,14 +180,15 @@ class _LoginPageState extends State<LoginPage> {
       loading = true;
       error = null;
     });
+
     final row = await DBHelper().auth(
       userC.text.trim(),
       passC.text.trim(),
       widget.role,
     );
-    setState(() {
-      loading = false;
-    });
+
+    setState(() => loading = false);
+
     if (row == null) {
       setState(() => error = 'Invalid credentials for role ${widget.role}');
       return;
@@ -191,15 +196,21 @@ class _LoginPageState extends State<LoginPage> {
 
     if (widget.role == 'advisor') {
       Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-            builder: (_) => AdvisorHomePage(username: row['username'])),
+          context,
+          MaterialPageRoute(
+              builder: (_) =>
+                  AdvisorHomePage(
+                    username: row['username'],// ✅ REQUIRED
+                  ),
+              ),
       );
-    } else if (widget.role == 'coordinator') {
+    }
+    else if (widget.role == 'coordinator') {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-            builder: (_) => CoordinatorHomePage(username: row['username'])),
+          builder: (_) => CoordinatorHomePage(username: row['username']),
+        ),
       );
     } else {
       Navigator.pushReplacement(
@@ -235,7 +246,8 @@ class _LoginPageState extends State<LoginPage> {
               onPressed: loading ? null : _login,
               child: Text(loading ? 'Signing in…' : 'Login'),
               style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 48)),
+                minimumSize: const Size(double.infinity, 48),
+              ),
             ),
           ],
         ),

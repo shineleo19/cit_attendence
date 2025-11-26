@@ -21,6 +21,9 @@ dependencies:
   cupertino_icons: ^1.0.8   # ✅ moved here
   pdf: ^3.11.0
   printing: ^5.12.0
+  http: ^1.2.1
+  wifi_iot: ^0.3.19
+  network_info_plus: ^4.1.0
 
 
 dev_dependencies:
