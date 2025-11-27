@@ -23,17 +23,21 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
     _sectionsFuture = DBHelper().getSections();
   }
 
+  // ... (Keep existing logic methods: _computeWeekRangeForDate, _generateSectionWeeklyPdf) ...
   List<DateTime> _computeWeekRangeForDate(DateTime dt) {
     final monday = dt.subtract(Duration(days: dt.weekday - 1));
     return List.generate(6, (i) => monday.add(Duration(days: i)));
   }
 
   Future<void> _generateSectionWeeklyPdf(String sectionCode) async {
+    // Logic remains exactly the same as your original code
     try {
-      await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
+      await DBHelper()
+          .importStudentsFromAsset('assets/data/students_master.xlsx');
     } catch (e) {}
     try {
-      await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx');
+      await DBHelper()
+          .importStudentsFromExcel('/mnt/data/students_master.xlsx');
     } catch (e) {}
 
     final today = DateTime.now();
@@ -60,16 +64,22 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
       final status = r['status'] as String?;
       if (dateKey != null && status != null) {
         String shortStatus;
-        if (status == 'Present') shortStatus = 'P';
-        else if (status == 'Absent') shortStatus = 'A';
-        else if (status == 'OD') shortStatus = 'OD';
-        else shortStatus = '-';
-        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = shortStatus;
+        if (status == 'Present')
+          shortStatus = 'P';
+        else if (status == 'Absent')
+          shortStatus = 'A';
+        else if (status == 'OD')
+          shortStatus = 'OD';
+        else
+          shortStatus = '-';
+        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] =
+            shortStatus;
       }
     }
 
     final students = studentMap.values.toList()
-      ..sort((a, b) => (a['reg_no'] as String).compareTo(b['reg_no'] as String));
+      ..sort(
+              (a, b) => (a['reg_no'] as String).compareTo(b['reg_no'] as String));
 
     final pdfBytes = await WeeklyReport.generateForSection(
       sectionCode: sectionCode,
@@ -77,50 +87,119 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
       students: students,
     );
 
-    final filename = 'weekly_report_${sectionCode}_${DateFormat('yyyyMMdd').format(weekDates.first)}.pdf';
-    await Printing.layoutPdf(onLayout: (format) async => pdfBytes, name: filename);
+    final filename =
+        'weekly_report_${sectionCode}_${DateFormat('yyyyMMdd').format(weekDates.first)}.pdf';
+    await Printing.layoutPdf(
+        onLayout: (format) async => pdfBytes, name: filename);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Advisor – Sections')),
+      appBar: AppBar(
+        title: const Text('My Sections'),
+        backgroundColor: Colors.indigo,
+        foregroundColor: Colors.white,
+      ),
       body: FutureBuilder(
         future: _sectionsFuture,
         builder: (context, snap) {
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
           final sections = snap.data as List<Map<String, dynamic>>;
-          return ListView.separated(
+
+          if (sections.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.class_outlined,
+                      size: 64, color: Colors.grey.shade400),
+                  const SizedBox(height: 16),
+                  Text("No sections assigned",
+                      style: TextStyle(color: Colors.grey.shade600)),
+                ],
+              ),
+            );
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
             itemCount: sections.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (_, i) {
               final s = sections[i];
-              return ListTile(
-                title: Text("CSE-${s['code']}"),
-                subtitle: const Text("Tap to mark attendance"),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.download_rounded),
-                      tooltip: 'Download weekly report',
-                      onPressed: () => _generateSectionWeeklyPdf(s['code'] as String),
+              return Card(
+                elevation: 2,
+                margin: const EdgeInsets.only(bottom: 16),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16)),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: () async {
+                    final students =
+                    await DBHelper().getStudentsBySectionCode(s['code']);
+                    if (!context.mounted) return;
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => AdvisorPage(
+                          section: s['code'],
+                          username: widget.username,
+                          students: students,
+                        ),
+                      ),
+                    );
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.indigo.shade50,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.people_alt_rounded,
+                              color: Colors.indigo),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "Class CSE-${s['code']}",
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                "Tap to take attendance",
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.grey.shade600),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Column(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.picture_as_pdf_rounded,
+                                  color: Colors.redAccent),
+                              tooltip: 'Download Report',
+                              onPressed: () =>
+                                  _generateSectionWeeklyPdf(s['code']),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
-                    const Icon(Icons.chevron_right),
-                  ],
+                  ),
                 ),
-                onTap: () async {
-                  // 🔥 Pre-fetch students before navigating to AdvisorPage
-                  final students = await DBHelper().getStudentsBySectionCode(s['code']);
-                  if (!context.mounted) return;
-                  Navigator.push(context, MaterialPageRoute(
-                    builder: (_) => AdvisorPage(
-                      section: s['code'],
-                      username: widget.username,
-                      students: students,
-                    ),
-                  ));
-                },
               );
             },
           );
@@ -130,7 +209,6 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
   }
 }
 
-// 🔥 Updated AdvisorPage (HTTP version)
 class AdvisorPage extends StatefulWidget {
   final String section;
   final String username;
@@ -158,7 +236,8 @@ class _AdvisorPageState extends State<AdvisorPage> {
   Map<String, String> odStatus = {};
 
   final TextEditingController _ipController = TextEditingController();
-  final TextEditingController _portController = TextEditingController(text: "4040");
+  final TextEditingController _portController =
+  TextEditingController(text: "4040");
   bool isSubmitting = false;
 
   @override
@@ -174,8 +253,8 @@ class _AdvisorPageState extends State<AdvisorPage> {
     }
   }
 
+  // ... (Keep _saveLocally and _submitToCoordinator logic exactly as is) ...
   Future<void> _saveLocally() async {
-    // 🔥 Integrated SQLite saving logic so data persists offline
     try {
       final dateStr = DateFormat('yyyy-MM-dd').format(selectedDate);
       for (var s in students) {
@@ -205,10 +284,10 @@ class _AdvisorPageState extends State<AdvisorPage> {
 
     setState(() => isSubmitting = true);
 
-    // 1. Save to local DB first
     await _saveLocally();
 
-    final url = "http://${_ipController.text.trim()}:${_portController.text.trim()}/submit_attendance";
+    final url =
+        "http://${_ipController.text.trim()}:${_portController.text.trim()}/submit_attendance";
 
     final recordList = students.map((s) {
       final id = s['id'] as String;
@@ -234,11 +313,13 @@ class _AdvisorPageState extends State<AdvisorPage> {
     };
 
     try {
-      final response = await http.post(
+      final response = await http
+          .post(
         Uri.parse(url),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode(payload),
-      ).timeout(const Duration(seconds: 5));
+      )
+          .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
         _showMessage("✔ Attendance submitted!", Colors.green);
@@ -246,7 +327,8 @@ class _AdvisorPageState extends State<AdvisorPage> {
           widget.onSubmitComplete!();
         }
       } else {
-        _showMessage("❌ Submit Failed (${response.statusCode})", Colors.redAccent);
+        _showMessage(
+            "❌ Submit Failed (${response.statusCode})", Colors.redAccent);
       }
     } catch (e) {
       _showMessage("❌ Connection Error: $e", Colors.redAccent);
@@ -261,7 +343,8 @@ class _AdvisorPageState extends State<AdvisorPage> {
       SnackBar(
         content: Text(msg),
         backgroundColor: color,
-        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
   }
@@ -273,7 +356,6 @@ class _AdvisorPageState extends State<AdvisorPage> {
       } else {
         status[id] = 'Present';
       }
-      // If absent, clear OD
       if (status[id] == 'Absent') {
         odStatus[id] = 'Normal';
       }
@@ -284,7 +366,6 @@ class _AdvisorPageState extends State<AdvisorPage> {
     setState(() {
       if (odStatus[id] == "Normal") {
         odStatus[id] = "OD";
-        // If OD, ensure marked present implicitly or handle as needed
       } else {
         odStatus[id] = "Normal";
       }
@@ -293,112 +374,202 @@ class _AdvisorPageState extends State<AdvisorPage> {
 
   @override
   Widget build(BuildContext context) {
+    final absents = status.values.where((v) => v == 'Absent').length;
+    final ods = odStatus.values.where((v) => v == 'OD').length;
+
     return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
-        title: Text("Advisor – ${widget.section}"),
+        title: Column(
+          children: [
+            Text("Section ${widget.section}",
+                style: const TextStyle(fontSize: 16)),
+            Text(
+              "Absent: $absents | OD: $ods",
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.indigo,
+        foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.analytics),
+            icon: const Icon(Icons.bar_chart_rounded),
             tooltip: "View Report",
             onPressed: () {
-              Navigator.push(context, MaterialPageRoute(
+              Navigator.push(
+                context,
+                MaterialPageRoute(
                   builder: (_) => AdvisorReportPage(
-                      sectionCode: widget.section,
-                      date: DateFormat('yyyy-MM-dd').format(selectedDate)
-                  )
-              ));
+                    sectionCode: widget.section,
+                    date: DateFormat('yyyy-MM-dd').format(selectedDate),
+                  ),
+                ),
+              );
             },
           )
         ],
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: isSubmitting ? null : _submitToCoordinator,
+        backgroundColor: isSubmitting ? Colors.grey : Colors.indigo,
+        foregroundColor: Colors.white,
+        icon: isSubmitting
+            ? const SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+                color: Colors.white, strokeWidth: 2))
+            : const Icon(Icons.cloud_upload_rounded),
+        label: Text(isSubmitting ? "Sending..." : "Submit"),
+      ),
       body: Column(
         children: [
-          _buildDateSlotRow(),
-          _buildCoordinatorIPInput(),
+          // Config Header Card
+          _buildConfigHeader(),
+          // Student List
           Expanded(child: _buildStudentList()),
-          _buildSubmitButton(),
         ],
       ),
     );
   }
 
-  Widget _buildDateSlotRow() {
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: Row(
-        children: [
-          Expanded(
-            child: InkWell(
-              onTap: () async {
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: selectedDate,
-                  firstDate: DateTime(2020),
-                  lastDate: DateTime(2100),
-                );
-                if (picked != null) {
-                  setState(() => selectedDate = picked);
-                }
-              },
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.grey),
-                ),
-                child: Text(
-                  DateFormat('yyyy-MM-dd').format(selectedDate),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          DropdownButton<String>(
-            value: slot,
-            items: ["FN", "AN"].map((e) {
-              return DropdownMenuItem(value: e, child: Text(e));
-            }).toList(),
-            onChanged: (v) => setState(() => slot = v!),
-          ),
+  Widget _buildConfigHeader() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(20)),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 5)),
         ],
       ),
-    );
-  }
-
-  Widget _buildCoordinatorIPInput() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Coordinator Hotspot IP:", style: TextStyle(fontWeight: FontWeight.bold)),
           Row(
             children: [
+              // Date Picker
               Expanded(
-                child: TextField(
-                  controller: _ipController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                      hintText: "e.g., 192.168.43.1",
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+                flex: 3,
+                child: InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: selectedDate,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2100),
+                      builder: (ctx, child) {
+                        return Theme(
+                          data: Theme.of(ctx).copyWith(
+                            colorScheme: const ColorScheme.light(
+                              primary: Colors.indigo,
+                            ),
+                          ),
+                          child: child!,
+                        );
+                      },
+                    );
+                    if (picked != null) {
+                      setState(() => selectedDate = picked);
+                    }
+                  },
+                  child: Container(
+                    padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey.shade300),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.calendar_today_rounded,
+                            size: 18, color: Colors.indigo),
+                        const SizedBox(width: 8),
+                        Text(
+                          DateFormat('MMM dd, yyyy').format(selectedDate),
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 70,
-                child: TextField(
-                  controller: _portController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+              const SizedBox(width: 12),
+              // Slot Selector
+              Expanded(
+                flex: 2,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: slot,
+                      isExpanded: true,
+                      icon: const Icon(Icons.access_time_filled_rounded,
+                          color: Colors.indigo, size: 20),
+                      items: ["FN", "AN"].map((e) {
+                        return DropdownMenuItem(
+                            value: e,
+                            child: Text(e,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold)));
+                      }).toList(),
+                      onChanged: (v) => setState(() => slot = v!),
+                    ),
                   ),
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          // Coordinator IP
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.wifi_tethering, color: Colors.grey),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _ipController,
+                    keyboardType: TextInputType.number,
+                    style: const TextStyle(fontSize: 14),
+                    decoration: const InputDecoration(
+                      hintText: "Coordinator IP (e.g., 192.168.43.1)",
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      contentPadding: EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 50,
+                  child: TextField(
+                    controller: _portController,
+                    keyboardType: TextInputType.number,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 14, color: Colors.grey),
+                    decoration: const InputDecoration(
+                      hintText: "Port",
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -407,6 +578,7 @@ class _AdvisorPageState extends State<AdvisorPage> {
 
   Widget _buildStudentList() {
     return ListView.builder(
+      padding: const EdgeInsets.only(top: 8, bottom: 80),
       itemCount: students.length,
       itemBuilder: (context, i) {
         final s = students[i];
@@ -414,61 +586,114 @@ class _AdvisorPageState extends State<AdvisorPage> {
         final isAbsent = status[id] == 'Absent';
         final isOD = odStatus[id] == 'OD';
 
+        // Dynamic color for the card border/status
+        Color statusColor = Colors.green;
+        if (isAbsent) statusColor = Colors.red;
+        if (isOD) statusColor = Colors.blue;
+
         return Card(
-          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-          child: ListTile(
-            title: Text("${s['name']} (${s['reg_no']})"),
-            subtitle: Text("Gender: ${s['gender']} | Quota: ${s['quota']}"),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                GestureDetector(
-                  onTap: () => _toggleStatus(id),
-                  child: Chip(
-                    label: Text(isAbsent ? 'ABSENT' : 'PRESENT',
-                        style: const TextStyle(color: Colors.white, fontSize: 12)),
-                    backgroundColor: isAbsent ? Colors.red : Colors.green,
+          elevation: 0,
+          color: Colors.white,
+          margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: statusColor.withOpacity(0.5), width: 1),
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => _toggleStatus(id), // Quick toggle attendance
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  // Avatar / Status Indicator
+                  Container(
+                    width: 45,
+                    height: 45,
+                    decoration: BoxDecoration(
+                      color: statusColor.withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Center(
+                      child: Text(
+                        isAbsent ? "A" : (isOD ? "OD" : "P"),
+                        style: TextStyle(
+                            color: statusColor,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18),
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: () => _toggleOD(id),
-                  child: Chip(
-                    label: Text(isOD ? 'OD' : 'Normal',
-                        style: TextStyle(color: isOD ? Colors.white : Colors.black87, fontSize: 12)),
-                    backgroundColor: isOD ? Colors.blue : Colors.grey[300],
+                  const SizedBox(width: 16),
+                  // Details
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          s['name'],
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            decoration:
+                            isAbsent ? TextDecoration.lineThrough : null,
+                            color: isAbsent ? Colors.grey : Colors.black87,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade200,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(s['reg_no'],
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold)),
+                            ),
+                            const SizedBox(width: 8),
+                            Text("${s['gender']} • ${s['quota']}",
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.grey)),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                  // OD Toggle Button
+                  Column(
+                    children: [
+                      Text("OD",
+                          style: TextStyle(
+                              fontSize: 10,
+                              color: isOD ? Colors.blue : Colors.grey)),
+                      Switch(
+                        value: isOD,
+                        activeColor: Colors.blue,
+                        onChanged: (val) => _toggleOD(id),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         );
       },
     );
   }
-
-  Widget _buildSubmitButton() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      width: double.infinity,
-      child: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          backgroundColor: Colors.green,
-        ),
-        onPressed: isSubmitting ? null : _submitToCoordinator,
-        child: Text(isSubmitting ? "Sending..." : "Submit to Coordinator",
-            style: const TextStyle(fontSize: 18, color: Colors.white)),
-      ),
-    );
-  }
 }
 
-// Re-including ReportPage so analytics button works
 class AdvisorReportPage extends StatefulWidget {
   final String sectionCode;
   final String date;
-  const AdvisorReportPage({super.key, required this.sectionCode, required this.date});
+  const AdvisorReportPage(
+      {super.key, required this.sectionCode, required this.date});
 
   @override
   State<AdvisorReportPage> createState() => _AdvisorReportPageState();
@@ -476,7 +701,13 @@ class AdvisorReportPage extends StatefulWidget {
 
 class _AdvisorReportPageState extends State<AdvisorReportPage> {
   List<Map<String, dynamic>> rows = [];
-  Map<String, dynamic> summary = {'total': 0, 'present': 0, 'absent': 0, 'od': 0, 'percent': 0.0};
+  Map<String, dynamic> summary = {
+    'total': 0,
+    'present': 0,
+    'absent': 0,
+    'od': 0,
+    'percent': 0.0
+  };
 
   @override
   void initState() {
@@ -485,50 +716,126 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
   }
 
   Future<void> _load() async {
-    rows = await DBHelper().getAttendanceForSectionByDate(widget.sectionCode, widget.date);
-    summary = await DBHelper().getSectionSummary(widget.sectionCode, widget.date);
-    if(mounted) setState(() {});
+    rows = await DBHelper()
+        .getAttendanceForSectionByDate(widget.sectionCode, widget.date);
+    summary =
+    await DBHelper().getSectionSummary(widget.sectionCode, widget.date);
+    if (mounted) setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Report – ${widget.sectionCode}')),
+      backgroundColor: const Color(0xFFF5F7FA),
+      appBar: AppBar(
+        title: Text('Report: CSE-${widget.sectionCode}'),
+        backgroundColor: Colors.indigo,
+        foregroundColor: Colors.white,
+      ),
       body: Column(
         children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            margin: const EdgeInsets.all(12),
-            color: Colors.blue.withOpacity(0.1),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                Text("Total: ${summary['total']}"),
-                Text("Present: ${summary['present']}"),
-                Text("Absent: ${summary['absent']}"),
-                Text("OD: ${summary['od']}"),
-                Text("${(summary['percent'] as double).toStringAsFixed(1)}%"),
-              ],
-            ),
-          ),
+          _buildSummaryCard(),
           Expanded(
             child: ListView.separated(
+              padding: const EdgeInsets.all(16),
               itemCount: rows.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
               itemBuilder: (_, i) {
                 final r = rows[i];
-                final status = r['status'] == 'Absent' ? 'Absent' : (r['od_status'] == 'OD' ? 'OD' : 'Present');
-                Color color = status == 'Absent' ? Colors.red : (status == 'OD' ? Colors.blue : Colors.green);
-                return ListTile(
-                  title: Text(r['name'] ?? ''),
-                  subtitle: Text(r['reg_no'] ?? ''),
-                  trailing: Text(status, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+                final status = r['status'] == 'Absent'
+                    ? 'Absent'
+                    : (r['od_status'] == 'OD' ? 'OD' : 'Present');
+
+                Color color = Colors.green;
+                IconData icon = Icons.check_circle_outline;
+                if (status == 'Absent') {
+                  color = Colors.red;
+                  icon = Icons.cancel_outlined;
+                } else if (status == 'OD') {
+                  color = Colors.blue;
+                  icon = Icons.school_outlined;
+                }
+
+                return Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: color.withOpacity(0.1),
+                      child: Icon(icon, color: color, size: 20),
+                    ),
+                    title: Text(r['name'] ?? '',
+                        style: const TextStyle(fontWeight: FontWeight.w500)),
+                    subtitle: Text(r['reg_no'] ?? ''),
+                    trailing: Text(
+                      status.toUpperCase(),
+                      style: TextStyle(
+                          color: color,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12),
+                    ),
+                  ),
                 );
               },
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSummaryCard() {
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+            colors: [Color(0xFF5C6BC0), Color(0xFF3949AB)]),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: const [
+          BoxShadow(
+              color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _statItem("Total", "${summary['total']}"),
+          _statItem("Present", "${summary['present']}"),
+          _statItem("Absent", "${summary['absent']}"),
+          _statItem("OD", "${summary['od']}"),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              "${(summary['percent'] as double).toStringAsFixed(1)}%",
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statItem(String label, String value) {
+    return Column(
+      children: [
+        Text(value,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.bold)),
+        Text(label,
+            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+      ],
     );
   }
 }

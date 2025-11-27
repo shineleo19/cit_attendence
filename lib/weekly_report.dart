@@ -1,9 +1,7 @@
-// weekly_report.dart
 import 'dart:typed_data';
 import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:pdf/src/pdf/page_format.dart';
 
 class WeeklyReport {
   static List<String> _dateHeaders(List<DateTime> dates) {
@@ -11,16 +9,17 @@ class WeeklyReport {
     return dates.map((d) => df.format(d)).toList();
   }
 
-  // Convert full status → short code for compact table
+  // Convert full status -> short code
   static String _short(String? status) {
     if (status == null) return '-';
     final s = status.toLowerCase();
     if (s == 'present') return 'P';
     if (s == 'absent') return 'A';
     if (s == 'od') return 'OD';
-    return status;
+    return status; // Fallback
   }
 
+  // --- GENERATE ALL SECTIONS ---
   static Future<Uint8List> generateAll({
     required List<DateTime> weekDates,
     required List<Map<String, dynamic>> rows,
@@ -30,6 +29,7 @@ class WeeklyReport {
     final weekDateStrings =
     weekDates.map((d) => DateFormat('yyyy-MM-dd').format(d)).toList();
 
+    // Group by section
     final Map<String, List<Map<String, dynamic>>> bySection = {};
     for (final r in rows) {
       final sec = r['section_code'] as String? ?? 'Unknown';
@@ -40,9 +40,9 @@ class WeeklyReport {
       final sectionCode = entry.key;
       final students = entry.value;
 
-      final headers = <String>['RegNo', 'Name'] +
-          dateHeaders +
-          ['Present', 'Absent', '%'];
+      // REMOVED: 'Present', '%'
+      // KEPT: 'Absent' for reference
+      final headers = <String>['RegNo', 'Name'] + dateHeaders + ['Absent'];
 
       final data = <List<String>>[];
 
@@ -54,8 +54,7 @@ class WeeklyReport {
 
         final daily = s['daily'] as Map<String, String>? ?? {};
 
-        int present = 0;
-        int absent = 0;
+        int absentCount = 0;
 
         for (final dateKey in weekDateStrings) {
           final raw = daily[dateKey];
@@ -63,21 +62,14 @@ class WeeklyReport {
 
           row.add(_short(raw));
 
-          if (status == 'present') present++;
-          if (status == 'absent') absent++;
+          // Only counting Absent now
+          if (status == 'absent' || status == 'a') {
+            absentCount++;
+          }
         }
 
-        row.add(present.toString());
-        row.add(absent.toString());
-
-        final denom = (present + absent) == 0 ? 1 : (present + absent);
-        final percent = (present * 100.0) / denom;
-
-        final percentStr = percent % 1 == 0
-            ? percent.toInt().toString() + '%'
-            : percent.toStringAsFixed(1) + '%';
-
-        row.add(percentStr);
+        // REMOVED: Present count and Percentage calculation
+        row.add(absentCount.toString());
 
         data.add(row);
       }
@@ -85,34 +77,12 @@ class WeeklyReport {
       pdf.addPage(
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(20), // Added cleaner margin
           build: (pw.Context context) {
             return [
-              pw.Header(
-                level: 0,
-                child: pw.Text(
-                  'Weekly Report — Section: $sectionCode',
-                  style: pw.TextStyle(
-                    fontSize: 18,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-              ),
-              pw.SizedBox(height: 6),
-              pw.Text(
-                'Week: ${DateFormat('dd MMM yyyy').format(weekDates.first)} - '
-                    '${DateFormat('dd MMM yyyy').format(weekDates.last)}',
-              ),
-              pw.SizedBox(height: 12),
-              pw.Table.fromTextArray(
-                headers: headers,
-                data: data,
-                headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                cellAlignment: pw.Alignment.centerLeft,
-                headerDecoration:
-                pw.BoxDecoration(color: PdfColors.grey300),
-                cellPadding:
-                const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 6),
-              ),
+              _buildHeader(sectionCode, weekDates),
+              pw.SizedBox(height: 15),
+              _buildTable(headers, data),
             ];
           },
         ),
@@ -122,6 +92,7 @@ class WeeklyReport {
     return pdf.save();
   }
 
+  // --- GENERATE SINGLE SECTION ---
   static Future<Uint8List> generateForSection({
     required String sectionCode,
     required List<DateTime> weekDates,
@@ -132,9 +103,8 @@ class WeeklyReport {
     final weekDateStrings =
     weekDates.map((d) => DateFormat('yyyy-MM-dd').format(d)).toList();
 
-    final headers = <String>['RegNo', 'Name'] +
-        dateHeaders +
-        ['Present', 'Absent', '%'];
+    // REMOVED: 'Present', '%'
+    final headers = <String>['RegNo', 'Name'] + dateHeaders + ['Absent'];
 
     final data = <List<String>>[];
 
@@ -145,8 +115,7 @@ class WeeklyReport {
 
       final daily = s['daily'] as Map<String, String>? ?? {};
 
-      int present = 0;
-      int absent = 0;
+      int absentCount = 0;
 
       for (final dateKey in weekDateStrings) {
         final raw = daily[dateKey];
@@ -154,21 +123,13 @@ class WeeklyReport {
 
         row.add(_short(raw));
 
-        if (status == 'present') present++;
-        if (status == 'absent') absent++;
+        if (status == 'absent' || status == 'a') {
+          absentCount++;
+        }
       }
 
-      row.add(present.toString());
-      row.add(absent.toString());
-
-      final denom = (present + absent) == 0 ? 1 : (present + absent);
-      final percent = (present * 100.0) / denom;
-
-      final percentStr = percent % 1 == 0
-          ? percent.toInt().toString() + '%'
-          : percent.toStringAsFixed(1) + '%';
-
-      row.add(percentStr);
+      // REMOVED: Present count and Percentage calculation
+      row.add(absentCount.toString());
 
       data.add(row);
     }
@@ -176,37 +137,70 @@ class WeeklyReport {
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(20),
         build: (pw.Context context) {
           return [
-            pw.Header(
-              level: 0,
-              child: pw.Text(
-                'Weekly Report — Section: $sectionCode',
-                style:
-                pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
-              ),
-            ),
-            pw.SizedBox(height: 6),
-            pw.Text(
-              'Week: ${DateFormat('dd MMM yyyy').format(weekDates.first)} - '
-                  '${DateFormat('dd MMM yyyy').format(weekDates.last)}',
-            ),
-            pw.SizedBox(height: 12),
-            pw.Table.fromTextArray(
-              headers: headers,
-              data: data,
-              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-              cellAlignment: pw.Alignment.centerLeft,
-              headerDecoration:
-              pw.BoxDecoration(color: PdfColors.grey300),
-              cellPadding:
-              const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 6),
-            ),
+            _buildHeader(sectionCode, weekDates),
+            pw.SizedBox(height: 15),
+            _buildTable(headers, data),
           ];
         },
       ),
     );
 
     return pdf.save();
+  }
+
+  // --- UI WIDGET HELPERS ---
+
+  static pw.Widget _buildHeader(String sectionCode, List<DateTime> weekDates) {
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text(
+          'Weekly Attendance Report',
+          style: pw.TextStyle(fontSize: 14, color: PdfColors.grey700),
+        ),
+        pw.SizedBox(height: 4),
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text(
+              'Section: $sectionCode',
+              style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold),
+            ),
+            pw.Text(
+              '${DateFormat('dd MMM').format(weekDates.first)} - ${DateFormat('dd MMM yyyy').format(weekDates.last)}',
+              style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+            ),
+          ],
+        ),
+        pw.Divider(color: PdfColors.grey400),
+      ],
+    );
+  }
+
+  static pw.Widget _buildTable(List<String> headers, List<List<String>> data) {
+    return pw.Table.fromTextArray(
+      headers: headers,
+      data: data,
+      border: null, // Cleaner look without heavy grid lines
+      headerStyle: pw.TextStyle(
+        fontWeight: pw.FontWeight.bold,
+        color: PdfColors.white,
+        fontSize: 10,
+      ),
+      headerDecoration: const pw.BoxDecoration(color: PdfColors.indigo),
+      cellStyle: const pw.TextStyle(fontSize: 10),
+      cellAlignment: pw.Alignment.center, // Center align data
+      // Align Name and RegNo to the left (Indices 0 and 1)
+      cellAlignments: {
+        0: pw.Alignment.centerLeft,
+        1: pw.Alignment.centerLeft,
+      },
+      headerHeight: 25,
+      cellHeight: 30,
+      oddRowDecoration: const pw.BoxDecoration(color: PdfColors.grey100),
+    );
   }
 }
