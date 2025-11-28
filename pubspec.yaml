@@ -35,9 +35,9 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/data/students_master.xlsx   # ✅ fixed indentation + space
-
+    - assets/data/students_master.xlsx # ✅ fixed indentation + space
+    - assets/icon/cit_logo.png
 flutter_icons:
   android: true
   ios: true
-  image_path: "assets/icon/cit_logo.png"
+  image_path: "assets/icon/CIT_logo.png"

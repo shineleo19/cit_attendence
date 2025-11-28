@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'advisor.dart';
 import 'coordinator.dart';
 import 'db_helper.dart';
+import 'hod.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,47 +20,20 @@ class AttendanceApp extends StatelessWidget {
       theme: ThemeData(
         colorSchemeSeed: Colors.indigo,
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF5F7FA), // Light grey-blue bg
+        scaffoldBackgroundColor: const Color(0xFFF5F7FA),
         appBarTheme: const AppBarTheme(
           centerTitle: true,
           elevation: 0,
-          backgroundColor: Colors.transparent, // For gradient overlap
+          backgroundColor: Colors.transparent,
           foregroundColor: Colors.white,
         ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            elevation: 2,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: Colors.white,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Colors.grey, width: 0.5),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Colors.indigo, width: 2),
-          ),
-          contentPadding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-        ),
+        // ... (Keep your existing theme settings)
       ),
       home: const RolePickerPage(),
     );
   }
 }
 
-// Stateful because DB is prepared here
 class RolePickerPage extends StatefulWidget {
   const RolePickerPage({super.key});
 
@@ -75,84 +49,12 @@ class _RolePickerPageState extends State<RolePickerPage> {
   }
 
   Future<void> _initDb() async {
-    await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
+    await DBHelper()
+        .importStudentsFromAsset('assets/data/students_master.xlsx');
     await DBHelper().database;
   }
 
-  // Confirm dialog for clearing SQLite data
-  void _showClearDataDialog(BuildContext context) {
-    final TextEditingController confirmController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.red),
-              SizedBox(width: 8),
-              Text('Clear Database?'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'This will permanently delete ALL attendance records.',
-                style: TextStyle(color: Colors.black87),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Type "confirm" to proceed:',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: confirmController,
-                decoration: const InputDecoration(
-                  hintText: 'confirm',
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Colors.red),
-              onPressed: () async {
-                if (confirmController.text.trim() == 'confirm') {
-                  Navigator.pop(ctx);
-                  await DBHelper().clearAttendance();
-
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Attendance table cleared ✅"),
-                        backgroundColor: Colors.redAccent,
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                  }
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text("Incorrect text. Data NOT cleared.")),
-                  );
-                }
-              },
-              child: const Text('CLEAR DATA'),
-            ),
-          ],
-        );
-      },
-    );
-  }
+  // NOTE: The _showClearDataDialog and the AppBar Action have been removed from here
 
   @override
   Widget build(BuildContext context) {
@@ -161,7 +63,7 @@ class _RolePickerPageState extends State<RolePickerPage> {
         children: [
           // 1. Top Gradient Background
           Container(
-            height: MediaQuery.of(context).size.height * 0.35,
+            height: MediaQuery.of(context).size.height * 0.40,
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 colors: [Color(0xFF3F51B5), Color(0xFF1A237E)],
@@ -174,20 +76,14 @@ class _RolePickerPageState extends State<RolePickerPage> {
               ),
             ),
           ),
-          // 2. Custom App Bar area
+          // 2. Custom App Bar area (Cleaned up)
           Positioned(
             top: 0,
             left: 0,
             right: 0,
             child: AppBar(
               title: const Text('College Attendance'),
-              actions: [
-                IconButton(
-                  tooltip: "Clear attendance (testing)",
-                  icon: const Icon(Icons.delete_forever, color: Colors.white70),
-                  onPressed: () => _showClearDataDialog(context),
-                ),
-              ],
+              // Actions removed
             ),
           ),
           // 3. Main Content
@@ -195,12 +91,9 @@ class _RolePickerPageState extends State<RolePickerPage> {
             child: Column(
               children: [
                 SizedBox(height: MediaQuery.of(context).size.height * 0.08),
-                // Header Icon
                 Container(
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.all(0),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withOpacity(0.1),
@@ -209,8 +102,15 @@ class _RolePickerPageState extends State<RolePickerPage> {
                       ),
                     ],
                   ),
-                  child: const Icon(Icons.school_rounded,
-                      size: 60, color: Colors.indigo),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(60), // Assuming image is square, this will make it round
+                    child: Image.asset(
+                      "assets/icon/cit_logo.png", // Replace with your image path
+                      width: 120, // Adjust width as needed
+                      height: 120, // Adjust height as needed
+                      fit: BoxFit.cover, // Adjust fit as needed
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 const Text(
@@ -226,7 +126,6 @@ class _RolePickerPageState extends State<RolePickerPage> {
                   style: TextStyle(fontSize: 14, color: Colors.white70),
                 ),
                 const Spacer(),
-                // Role Selection List
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
                   child: Column(
@@ -257,7 +156,7 @@ class _RolePickerPageState extends State<RolePickerPage> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 40),
+                const SizedBox(height: 90),
               ],
             ),
           ),
@@ -274,7 +173,8 @@ class _RolePickerPageState extends State<RolePickerPage> {
   }
 }
 
-// Custom Card Widget for Roles
+// ... (Keep _RoleCard, LoginPage, HodPlaceholderPage classes exactly as they were) ...
+// (Paste the rest of your existing main.dart code here)
 class _RoleCard extends StatelessWidget {
   final String title;
   final String subtitle;
@@ -398,7 +298,7 @@ class _LoginPageState extends State<LoginPage> {
     } else {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const HodPlaceholderPage()),
+        MaterialPageRoute(builder: (_) => HodHomePage(username: row['username'])),
       );
     }
   }
@@ -538,43 +438,6 @@ class _LoginPageState extends State<LoginPage> {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class HodPlaceholderPage extends StatelessWidget {
-  const HodPlaceholderPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('HOD Dashboard'),
-        backgroundColor: Colors.indigo,
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.construction_rounded,
-                size: 80, color: Colors.grey.shade300),
-            const SizedBox(height: 20),
-            Text(
-              'Coming Soon',
-              style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey.shade600),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'HOD dashboards are under construction.\nPlease use the Coordinator view for demos.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey),
-            ),
-          ],
-        ),
       ),
     );
   }

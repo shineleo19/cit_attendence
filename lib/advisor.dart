@@ -20,17 +20,85 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
   @override
   void initState() {
     super.initState();
-    _sectionsFuture = DBHelper().getSections();
+    _sectionsFuture = DBHelper().getSectionsForUser(widget.username);
   }
 
-  // ... (Keep existing logic methods: _computeWeekRangeForDate, _generateSectionWeeklyPdf) ...
+  // --- ADDED: Clear Data Dialog Logic ---
+  void _showClearDataDialog(BuildContext context) {
+    final TextEditingController confirmController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.red),
+              SizedBox(width: 8),
+              Text('Clear Database?'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This will permanently delete ALL attendance records.',
+                style: TextStyle(color: Colors.black87),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Type "confirm" to proceed:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: confirmController,
+                decoration: const InputDecoration(hintText: 'confirm'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () async {
+                if (confirmController.text.trim() == 'confirm') {
+                  Navigator.pop(ctx);
+                  await DBHelper().clearAttendance();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("Attendance table cleared ✅"),
+                        backgroundColor: Colors.redAccent,
+                      ),
+                    );
+                  }
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Incorrect text.")),
+                  );
+                }
+              },
+              child: const Text('CLEAR'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ... (Existing logic methods) ...
   List<DateTime> _computeWeekRangeForDate(DateTime dt) {
     final monday = dt.subtract(Duration(days: dt.weekday - 1));
     return List.generate(6, (i) => monday.add(Duration(days: i)));
   }
 
   Future<void> _generateSectionWeeklyPdf(String sectionCode) async {
-    // Logic remains exactly the same as your original code
     try {
       await DBHelper()
           .importStudentsFromAsset('assets/data/students_master.xlsx');
@@ -78,8 +146,8 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
     }
 
     final students = studentMap.values.toList()
-      ..sort(
-              (a, b) => (a['reg_no'] as String).compareTo(b['reg_no'] as String));
+      ..sort((a, b) =>
+          (a['reg_no'] as String).compareTo(b['reg_no'] as String));
 
     final pdfBytes = await WeeklyReport.generateForSection(
       sectionCode: sectionCode,
@@ -100,6 +168,14 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
         title: const Text('My Sections'),
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
+        // --- ADDED: Action Button for Clear Data ---
+        actions: [
+          IconButton(
+            tooltip: "Clear Data",
+            icon: const Icon(Icons.delete_rounded),
+            onPressed: () => _showClearDataDialog(context),
+          ),
+        ],
       ),
       body: FutureBuilder(
         future: _sectionsFuture,
@@ -180,7 +256,8 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
                               Text(
                                 "Tap to take attendance",
                                 style: TextStyle(
-                                    fontSize: 12, color: Colors.grey.shade600),
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600),
                               ),
                             ],
                           ),
@@ -253,7 +330,9 @@ class _AdvisorPageState extends State<AdvisorPage> {
     }
   }
 
-  // ... (Keep _saveLocally and _submitToCoordinator logic exactly as is) ...
+  // Note: I removed the misplaced _showClearDataDialog from here
+  // since it is now correctly placed in AdvisorHomePage
+
   Future<void> _saveLocally() async {
     try {
       final dateStr = DateFormat('yyyy-MM-dd').format(selectedDate);
@@ -477,8 +556,8 @@ class _AdvisorPageState extends State<AdvisorPage> {
                     }
                   },
                   child: Container(
-                    padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 14),
                     decoration: BoxDecoration(
                       border: Border.all(color: Colors.grey.shade300),
                       borderRadius: BorderRadius.circular(12),

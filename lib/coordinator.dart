@@ -39,6 +39,79 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
   }
 
   // ---------------------
+  // ADDED: Clear Data Dialog Logic
+  // ---------------------
+  void _showClearDataDialog(BuildContext context) {
+    final TextEditingController confirmController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.red),
+              SizedBox(width: 8),
+              Text('Clear Database?'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This will permanently delete ALL attendance records.',
+                style: TextStyle(color: Colors.black87),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Type "confirm" to proceed:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: confirmController,
+                decoration: const InputDecoration(hintText: 'confirm'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () async {
+                if (confirmController.text.trim() == 'confirm') {
+                  Navigator.pop(ctx);
+                  await DBHelper().clearAttendance();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("Attendance table cleared ✅"),
+                        backgroundColor: Colors.redAccent,
+                      ),
+                    );
+                    // Refresh logs to show action
+                    _log("Database cleared by user.");
+                  }
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Incorrect text.")),
+                  );
+                }
+              },
+              child: const Text('CLEAR'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ---------------------
   // HTTP server helpers (Logic unchanged)
   // ---------------------
   Future<String> _getLocalIpForDisplay() async {
@@ -137,8 +210,8 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
     } catch (e) {
       debugPrint('Failed to start server: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Failed to start server: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to start server: $e')));
       }
       await _stopServer();
     }
@@ -335,6 +408,14 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
         centerTitle: true,
+        // --- ADDED: Action Button for Clear Data ---
+        actions: [
+          IconButton(
+            tooltip: "Clear Data",
+            icon: const Icon(Icons.delete_sweep_rounded),
+            onPressed: () => _showClearDataDialog(context),
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         child: Column(
@@ -409,8 +490,11 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
                       ),
                     ),
                     Text(
-                      sessionActive ? "Port: $serverPort" : "Tap start to listen",
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      sessionActive
+                          ? "Port: $serverPort"
+                          : "Tap start to listen",
+                      style:
+                      const TextStyle(color: Colors.white70, fontSize: 12),
                     ),
                   ],
                 ),
@@ -423,17 +507,22 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
             children: [
               ElevatedButton.icon(
                 onPressed: sessionActive ? _stopServer : _startServer,
-                icon: Icon(sessionActive ? Icons.stop_rounded : Icons.play_arrow_rounded),
+                icon: Icon(sessionActive
+                    ? Icons.stop_rounded
+                    : Icons.play_arrow_rounded),
                 label: Text(sessionActive ? 'STOP SESSION' : 'START SESSION'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: sessionActive ? Colors.redAccent : Colors.white,
+                  backgroundColor:
+                  sessionActive ? Colors.redAccent : Colors.white,
                   foregroundColor: sessionActive ? Colors.white : Colors.indigo,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                 ),
               ),
               const SizedBox(width: 16),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 decoration: BoxDecoration(
                   color: Colors.black12,
                   borderRadius: BorderRadius.circular(12),
@@ -494,7 +583,8 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
     return FutureBuilder<List<Map<String, dynamic>>>(
       future: DBHelper().getSections(),
       builder: (context, snap) {
-        if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+        if (!snap.hasData)
+          return const Center(child: CircularProgressIndicator());
         final sections = snap.data!;
         if (sections.isEmpty) {
           return const Center(child: Text('No sections available'));
@@ -546,7 +636,8 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
           ? Center(
         child: Text(
           'Waiting for connections...',
-          style: TextStyle(color: Colors.grey.shade600, fontFamily: 'monospace'),
+          style: TextStyle(
+              color: Colors.grey.shade600, fontFamily: 'monospace'),
         ),
       )
           : ListView.builder(
@@ -615,7 +706,8 @@ class _ActionCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(title,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                style:
+                const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             Text(subtitle,
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
           ],
@@ -856,8 +948,8 @@ class _CumulativeReportPageState extends State<CumulativeReportPage> {
       child: ListTile(
         leading: CircleAvatar(
           backgroundColor: color.withOpacity(0.1),
-          child:
-          Text(r['section_code'], style: TextStyle(color: color, fontSize: 12)),
+          child: Text(r['section_code'],
+              style: TextStyle(color: color, fontSize: 12)),
         ),
         title: Text(r['name'] ?? '',
             style: const TextStyle(fontWeight: FontWeight.w500)),
@@ -1047,7 +1139,8 @@ class _CoordinatorSectionDetailPageState
                   ),
                   child: ListTile(
                     title: Text(r['name'] ?? '',
-                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                        style:
+                        const TextStyle(fontWeight: FontWeight.w600)),
                     subtitle: Text(r['reg_no'] ?? ''),
                     trailing: Container(
                       padding: const EdgeInsets.symmetric(
