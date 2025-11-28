@@ -151,6 +151,72 @@ class WeeklyReport {
     return pdf.save();
   }
 
+  static Future<Uint8List> generateAbsenteeReport({
+    required String date,
+    required List<Map<String, dynamic>> absentees,
+  }) async {
+    final pdf = pw.Document();
+
+    // Create table data
+    final data = <List<String>>[];
+    int sl = 1;
+
+    for (final row in absentees) {
+      data.add([
+        sl.toString(),
+        row['section_code']?.toString() ?? '-',
+        row['reg_no']?.toString() ?? '-',
+        row['name']?.toString() ?? '-',
+      ]);
+      sl++;
+    }
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(32),
+        build: (pw.Context context) {
+          return [
+            pw.Header(
+              level: 0,
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text('Daily Absentee Report',
+                      style: pw.TextStyle(
+                          fontSize: 20, fontWeight: pw.FontWeight.bold)),
+                  pw.SizedBox(height: 4),
+                  pw.Text('Date: $date',
+                      style: const pw.TextStyle(fontSize: 14)),
+                  pw.Text('Total Absentees: ${absentees.length}',
+                      style: const pw.TextStyle(fontSize: 12, color: PdfColors.red)),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 20),
+            pw.Table.fromTextArray(
+              headers: ['S.No', 'Section', 'Reg No', 'Student Name'],
+              data: data,
+              headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, color: PdfColors.white),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.redAccent),
+              cellHeight: 25,
+              cellAlignments: {
+                0: pw.Alignment.center,
+                1: pw.Alignment.center,
+                2: pw.Alignment.centerLeft,
+                3: pw.Alignment.centerLeft,
+              },
+              oddRowDecoration: const pw.BoxDecoration(color: PdfColors.grey100),
+            ),
+          ];
+        },
+      ),
+    );
+
+    return pdf.save();
+  }
+
+
   // --- UI WIDGET HELPERS ---
 
   static pw.Widget _buildHeader(String sectionCode, List<DateTime> weekDates) {

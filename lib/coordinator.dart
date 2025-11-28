@@ -1,3 +1,4 @@
+// lib/coordinator.dart
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'db_helper.dart';
 import 'weekly_report.dart';
 import 'package:printing/printing.dart';
+import 'wifi_direct_helper.dart';
 
 class CoordinatorHomePage extends StatefulWidget {
   final String username;
@@ -15,8 +17,8 @@ class CoordinatorHomePage extends StatefulWidget {
 }
 
 class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
-  // HTTP server state
-  HttpServer? _server;
+  // server/socket
+  ServerSocket? _server;
   bool sessionActive = false;
   String serverIp = 'Not started';
   final int serverPort = 4040;
@@ -24,10 +26,6 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
   int receivedRecordsTotal = 0;
   DateTime? lastReceivedAt;
   final List<String> _recentLogs = [];
-
-  // Keep some original state names for compatibility
-  bool advertising = false;
-  int connectedCount = 0;
 
   final df = DateFormat('yyyy-MM-dd');
   String date = DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -38,102 +36,107 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
     super.dispose();
   }
 
-  // ---------------------
-  // ADDED: Clear Data Dialog Logic
-  // ---------------------
-  void _showClearDataDialog(BuildContext context) {
-    final TextEditingController confirmController = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.red),
-              SizedBox(width: 8),
-              Text('Clear Database?'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'This will permanently delete ALL attendance records.',
-                style: TextStyle(color: Colors.black87),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Type "confirm" to proceed:',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: confirmController,
-                decoration: const InputDecoration(hintText: 'confirm'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Colors.red),
-              onPressed: () async {
-                if (confirmController.text.trim() == 'confirm') {
-                  Navigator.pop(ctx);
-                  await DBHelper().clearAttendance();
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Attendance table cleared ✅"),
-                        backgroundColor: Colors.redAccent,
-                      ),
-                    );
-                    // Refresh logs to show action
-                    _log("Database cleared by user.");
-                  }
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text("Incorrect text.")),
-                  );
-                }
-              },
-              child: const Text('CLEAR'),
-            ),
-          ],
-        );
-      },
-    );
+  void _log(String message) {
+    final t = DateFormat('HH:mm:ss').format(DateTime.now());
+    _recentLogs.insert(0, '[$t] $message');
+    if (_recentLogs.length > 80) _recentLogs.removeLast();
+    if (mounted) setState(() {});
   }
 
-  // ---------------------
-  // HTTP server helpers (Logic unchanged)
-  // ---------------------
+  Future<void> _startServer() async {
+    if (_server != null) return; // Already running
+
+    try {
+      // Start a TCP server on port 4040
+      _server = await ServerSocket.bind(InternetAddress.anyIPv4, 4040);
+      _log('Server started on ${_server!.address.address}:4040');
+
+      _server!.listen((Socket client) {
+        // FIXED: Added .cast<List<int>>() for type safety
+        client.cast<List<int>>().transform(utf8.decoder).listen((payload) async {
+          try {
+            final processed = await _processAttendancePayloadFromString(payload);
+            receivedBatches += 1;
+            receivedRecordsTotal += processed;
+            lastReceivedAt = DateTime.now();
+            _log('Processed batch: $processed records (total: $receivedRecordsTotal)');
+
+            if (mounted) setState(() {});
+          } catch (e, st) {
+            _log('Payload processing error: $e');
+            debugPrint('Payload parsing error: $e\n$st');
+          }
+        }, onError: (e, st) {
+          _log('Client stream error: $e');
+          debugPrint('Client stream error: $e\n$st');
+        });
+      }, onError: (e, st) {
+        _log('Server socket error: $e');
+        debugPrint('Server socket error: $e\n$st');
+      });
+
+      // Determine display IP (best-effort)
+      serverIp = await _getLocalIpForDisplay();
+      sessionActive = true;
+      _log('Server ready for connections at $serverIp:4040');
+      setState(() {});
+    } catch (e) {
+      _log('Failed to start server: $e');
+      debugPrint('Start server error: $e');
+      await _stopServer();
+    }
+  }
+
+  Future<void> _stopServer() async {
+    try {
+      // FIXED: Used .close() instead of .stop()
+      await _server?.close();
+    } catch (e) {
+      debugPrint('Error stopping server: $e');
+    }
+    _server = null;
+    sessionActive = false;
+    serverIp = 'Not started';
+    setState(() {});
+    _log('Server stopped');
+  }
+
   Future<String> _getLocalIpForDisplay() async {
     try {
       final interfaces = await NetworkInterface.list(
-          type: InternetAddressType.IPv4, includeLoopback: false);
+          type: InternetAddressType.IPv4,
+          includeLoopback: false
+      );
+
+      // PRIORITY 1: Look for Wi-Fi Direct interface (usually named 'p2p-...')
+      for (final iface in interfaces) {
+        if (iface.name.toLowerCase().contains('p2p')) {
+          for (final addr in iface.addresses) {
+            return addr.address; // Return the P2P IP immediately
+          }
+        }
+      }
+
+      // PRIORITY 2: Look for Hotspot interface (usually 'wlan' or 'ap')
+      for (final iface in interfaces) {
+        if (iface.name.toLowerCase().contains('wlan') || iface.name.toLowerCase().contains('ap')) {
+          for (final addr in iface.addresses) {
+            if (_isPrivateIp(addr.address)) return addr.address;
+          }
+        }
+      }
+
+      // FALLBACK: Existing logic
       for (final iface in interfaces) {
         for (final addr in iface.addresses) {
           final ip = addr.address;
           if (_isPrivateIp(ip)) return ip;
         }
       }
-      if (interfaces.isNotEmpty) {
-        final first = interfaces.first.addresses.firstWhere(
-                (a) => a.type == InternetAddressType.IPv4,
-            orElse: () => InternetAddress.loopbackIPv4);
-        return first.address;
-      }
-    } catch (e) {
-      debugPrint('Error listing network interfaces: $e');
+      return InternetAddress.loopbackIPv4.address;
+    } catch (_) {
+      return InternetAddress.loopbackIPv4.address;
     }
-    return InternetAddress.loopbackIPv4.address;
   }
 
   bool _isPrivateIp(String ip) {
@@ -143,107 +146,27 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
     if (parts.length == 4) {
       final first = int.tryParse(parts[0]) ?? 0;
       final second = int.tryParse(parts[1]) ?? 0;
-      if (first == 172 && (second >= 16 && second <= 31)) return true;
+      if (first == 172 && second >= 16 && second <= 31) return true;
     }
     return false;
   }
 
-  Future<void> _startServer() async {
-    if (_server != null) return;
-    try {
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, serverPort);
-      final ip = await _getLocalIpForDisplay();
-
-      setState(() {
-        sessionActive = true;
-        advertising = true;
-        serverIp = ip;
-        connectedCount = 0;
-        _recentLogs.clear();
-      });
-
-      _log('Session started. Listening on $ip:$serverPort');
-
-      _server!.listen((HttpRequest request) async {
-        try {
-          if (request.method == 'POST' &&
-              (request.uri.path == '/attendance' ||
-                  request.uri.path == '/submit_attendance' ||
-                  request.uri.path == '/submit')) {
-            final payloadString = await utf8.decoder.bind(request).join();
-            final dynamic decoded = jsonDecode(payloadString);
-            if (decoded is Map<String, dynamic>) {
-              final int processed = await _processAttendancePayload(decoded);
-              receivedBatches += 1;
-              receivedRecordsTotal += processed;
-              lastReceivedAt = DateTime.now();
-
-              request.response.statusCode = 200;
-              request.response.headers.contentType = ContentType.json;
-              request.response
-                  .write(jsonEncode({'status': 'ok', 'received': processed}));
-              _log(
-                  'Received batch: $processed records (Total: $receivedRecordsTotal)');
-            } else {
-              request.response.statusCode = 400;
-              request.response.write('Expected JSON object at root');
-            }
-          } else {
-            request.response.statusCode = 404;
-            request.response.write('Not found');
-          }
-        } catch (e, st) {
-          debugPrint('Error handling request: $e\n$st');
-          try {
-            request.response.statusCode = 500;
-            request.response.write('Internal server error: $e');
-          } catch (_) {}
-        } finally {
-          try {
-            await request.response.close();
-          } catch (_) {}
-          if (mounted) setState(() {});
-        }
-      }, onError: (e) {
-        debugPrint('HTTP server listen error: $e');
-      });
-    } catch (e) {
-      debugPrint('Failed to start server: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to start server: $e')));
-      }
-      await _stopServer();
+  /// Process raw JSON string payload from advisors
+  Future<int> _processAttendancePayloadFromString(String payload) async {
+    final decoded = jsonDecode(payload);
+    if (decoded is Map<String, dynamic>) {
+      return await _processAttendancePayloadMap(decoded);
+    } else {
+      _log('Invalid JSON payload (not an object)');
+      return 0;
     }
   }
 
-  Future<void> _stopServer() async {
+  Future<int> _processAttendancePayloadMap(Map<String, dynamic> map) async {
     try {
-      await _server?.close(force: true);
-    } catch (e) {
-      debugPrint('Error while stopping server: $e');
-    }
-    _server = null;
-    setState(() {
-      sessionActive = false;
-      advertising = false;
-      serverIp = 'Not started';
-      connectedCount = 0;
-    });
-    _log('Session stopped.');
-  }
-
-  void _log(String text) {
-    final time = DateFormat('HH:mm:ss').format(DateTime.now());
-    _recentLogs.insert(0, '[$time] $text');
-    if (_recentLogs.length > 50) _recentLogs.removeLast();
-    if (mounted) setState(() {});
-  }
-
-  Future<int> _processAttendancePayload(Map<String, dynamic> map) async {
-    try {
+      // Accept payloads with or without type
       if (map.containsKey('type') && map['type'] != 'ATT_DATA') {
-        _log('Ignored payload with unsupported type: ${map['type']}');
+        _log('Ignored payload: type=${map['type']}');
         return 0;
       }
 
@@ -252,12 +175,20 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
       final slotStr = (map['Slot'] ?? map['slot']) as String? ?? 'FN';
       final recordsRaw = map['Records'] ?? map['records'];
 
-      if (sectionCode.isEmpty) return 0;
-      if (dateStr == null || dateStr.isEmpty) return 0;
-      if (recordsRaw == null || recordsRaw is! List) return 0;
+      if (sectionCode.isEmpty) {
+        _log('Payload missing Section');
+        return 0;
+      }
+      if (dateStr == null || dateStr.isEmpty) {
+        _log('Payload missing Date');
+        return 0;
+      }
+      if (recordsRaw == null || recordsRaw is! List) {
+        _log('Payload missing Records array');
+        return 0;
+      }
 
-      final localStudents =
-      await DBHelper().getStudentsBySectionCode(sectionCode);
+      final localStudents = await DBHelper().getStudentsBySectionCode(sectionCode);
       final Map<String, String> regToLocalId = {};
       for (var s in localStudents) {
         final reg = s['reg_no'] as String?;
@@ -266,39 +197,35 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
       }
 
       int processed = 0;
-
       for (final dynamic r in recordsRaw) {
         if (r is! Map<String, dynamic>) continue;
 
-        final incomingReg =
-        (r['RegNo'] ?? r['reg_no'] ?? r['Regno'] ?? r['regNo']) as String?;
-        final incomingStudentId =
-        (r['StudentID'] ?? r['studentId'] ?? r['student_id']) as String?;
-
+        final incomingReg = (r['RegNo'] ?? r['reg_no'] ?? r['Regno'] ?? r['regNo']) as String?;
+        final incomingStudentId = (r['StudentID'] ?? r['studentId'] ?? r['student_id']) as String?;
         String? studentIdToUse;
         if (incomingReg != null && regToLocalId.containsKey(incomingReg)) {
           studentIdToUse = regToLocalId[incomingReg];
         } else if (incomingStudentId != null && incomingStudentId.isNotEmpty) {
           studentIdToUse = incomingStudentId;
         } else {
+          // skip unknown record
           continue;
         }
 
         final status = (r['Status'] ?? r['status']) as String? ?? 'Present';
-        final odStatus =
-        (r['ODStatus'] ?? r['od_status'] ?? 'Normal') as String;
-        final timeRaw = (r['Time'] ?? r['time']) as String? ??
-            DateTime.now().toIso8601String();
+        final odStatus = (r['ODStatus'] ?? r['od_status'] ?? 'Normal') as String;
+        final timeRaw = (r['Time'] ?? r['time']) as String? ?? DateTime.now().toIso8601String();
 
+        // Use DBHelper.upsertAttendance
         await DBHelper().upsertAttendance(
-          studentId: studentIdToUse ?? '',
-          sectionCode: sectionCode ?? '',
+          studentId: studentIdToUse ?? "", // FIXED: Added null check fallback
+          sectionCode: sectionCode,
           date: dateStr,
-          slot: slotStr ?? '',
-          status: status ?? 'Present',
-          odStatus: odStatus ?? 'Normal',
+          slot: slotStr,
+          status: status,
+          odStatus: odStatus,
           time: timeRaw,
-          source: 'advisor',
+          source: 'p2p',
         );
 
         processed += 1;
@@ -306,44 +233,34 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
 
       return processed;
     } catch (e, st) {
-      debugPrint('Error processing attendance payload: $e\n$st');
+      debugPrint('Error processing payload: $e\n$st');
+      _log('Error processing payload: $e');
       return 0;
     }
   }
 
+  // UI / navigation helpers
   void _openSection(String code) {
-    Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) =>
-              CoordinatorSectionDetailPage(sectionCode: code, date: date),
-        ));
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => CoordinatorSectionDetailPage(sectionCode: code, date: date),
+    ));
   }
 
   List<DateTime> _computeWeekRange(String isoDate) {
     final dt = DateTime.parse(isoDate);
     final monday = dt.subtract(Duration(days: dt.weekday - 1));
     final dates = <DateTime>[];
-    for (int i = 0; i < 6; i++) {
-      dates.add(monday.add(Duration(days: i)));
-    }
+    for (int i = 0; i < 6; i++) dates.add(monday.add(Duration(days: i)));
     return dates;
   }
 
   Future<void> _generateAllSectionsWeeklyPdf() async {
-    try {
-      await DBHelper()
-          .importStudentsFromAsset('assets/data/students_master.xlsx');
-    } catch (e) {}
-    try {
-      await DBHelper()
-          .importStudentsFromExcel('/mnt/data/students_master.xlsx');
-    } catch (e) {}
+    try { await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx'); } catch (e) {}
+    try { await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx'); } catch (e) {}
 
     final weekDates = _computeWeekRange(date);
     final start = DateFormat('yyyy-MM-dd').format(weekDates.first);
     final end = DateFormat('yyyy-MM-dd').format(weekDates.last);
-
     final raw = await DBHelper().getStudentAttendanceBetween(start, end);
 
     final Map<String, Map<String, dynamic>> studentMap = {};
@@ -361,17 +278,7 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
       final dateKey = r['date'] as String?;
       final status = r['status'] as String?;
       if (dateKey != null && status != null) {
-        String shortStatus;
-        if (status == 'Present')
-          shortStatus = 'P';
-        else if (status == 'Absent')
-          shortStatus = 'A';
-        else if (status == 'OD')
-          shortStatus = 'OD';
-        else
-          shortStatus = '-';
-        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] =
-            shortStatus;
+        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = status;
       }
     }
 
@@ -383,335 +290,115 @@ class _CoordinatorHomePageState extends State<CoordinatorHomePage> {
         return (a['reg_no'] as String).compareTo(b['reg_no'] as String);
       });
 
-    final pdfBytes =
-    await WeeklyReport.generateAll(weekDates: weekDates, rows: rows);
+    final pdfBytes = await WeeklyReport.generateAll(weekDates: weekDates, rows: rows);
+    final filename = 'weekly_report_all_${DateFormat('yyyyMMdd').format(weekDates.first)}_${DateFormat('yyyyMMdd').format(weekDates.last)}.pdf';
+    await Printing.layoutPdf(onLayout: (format) async => pdfBytes, name: filename);
 
-    final filename =
-        'weekly_report_all_${DateFormat('yyyyMMdd').format(weekDates.first)}_${DateFormat('yyyyMMdd').format(weekDates.last)}.pdf';
-    await Printing.layoutPdf(
-        onLayout: (format) async => pdfBytes, name: filename);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Weekly PDF generated'),
-        backgroundColor: Colors.green,
-      ));
-    }
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Weekly PDF generated')));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA),
-      appBar: AppBar(
-        title: const Text('Coordinator Dashboard'),
-        backgroundColor: Colors.indigo,
-        foregroundColor: Colors.white,
-        centerTitle: true,
-        // --- ADDED: Action Button for Clear Data ---
-        actions: [
-          IconButton(
-            tooltip: "Clear Data",
-            icon: const Icon(Icons.delete_sweep_rounded),
-            onPressed: () => _showClearDataDialog(context),
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            _buildServerPanel(),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildActionButtons(),
-                  const SizedBox(height: 24),
-                  const Text(
-                    "Sections",
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-                  _buildSectionList(),
-                  const SizedBox(height: 24),
-                  const Text(
-                    "Server Logs",
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-                  _buildLogConsole(),
-                  const SizedBox(height: 30),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildServerPanel() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: const BoxDecoration(
-        color: Colors.indigo,
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(32)),
-      ),
-      child: Column(
+      appBar: AppBar(title: const Text('Coordinator')),
+      body: Column(
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(16),
-            ),
+          Padding(
+            padding: const EdgeInsets.all(12),
             child: Row(
-              mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  sessionActive
-                      ? Icons.wifi_tethering
-                      : Icons.wifi_tethering_off,
-                  color: sessionActive ? Colors.greenAccent : Colors.white54,
+                Expanded(child: Text('Date: $date')),
+                ElevatedButton(
+                  onPressed: sessionActive ? _stopServer : _startServer,
+                  child: Text(sessionActive ? 'Stop Session' : 'Start Session'),
                 ),
                 const SizedBox(width: 12),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      sessionActive ? serverIp : "Server Offline",
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                    Text(
-                      sessionActive
-                          ? "Port: $serverPort"
-                          : "Tap start to listen",
-                      style:
-                      const TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                  ],
+                Text('Batches: $receivedBatches'),
+                const SizedBox(width: 12),
+                Text('Records: $receivedRecordsTotal'),
+              ],
+            ),
+          ),
+
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Column(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _generateAllSectionsWeeklyPdf,
+                  icon: const Icon(Icons.download_rounded),
+                  label: const Text('Download Weekly Report (All Sections)'),
+                  style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 48), backgroundColor: Colors.green, foregroundColor: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.push(context, MaterialPageRoute(
+                      builder: (_) => CumulativeReportPage(date: date),
+                    ));
+                  },
+                  icon: const Icon(Icons.assessment),
+                  label: const Text('CUMULATIVE REPORT'),
+                  style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 48), backgroundColor: Colors.orange, foregroundColor: Colors.white),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 20),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ElevatedButton.icon(
-                onPressed: sessionActive ? _stopServer : _startServer,
-                icon: Icon(sessionActive
-                    ? Icons.stop_rounded
-                    : Icons.play_arrow_rounded),
-                label: Text(sessionActive ? 'STOP SESSION' : 'START SESSION'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                  sessionActive ? Colors.redAccent : Colors.white,
-                  foregroundColor: sessionActive ? Colors.white : Colors.indigo,
-                  padding:
-                  const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+
+          const SizedBox(height: 8),
+          const Divider(height: 1),
+          Expanded(
+            child: FutureBuilder<List<Map<String, dynamic>>>(
+              future: DBHelper().getSections(),
+              builder: (context, snap) {
+                if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+                final sections = snap.data!;
+                if (sections.isEmpty) return const Center(child: Text('No sections available'));
+                return ListView.separated(
+                  itemCount: sections.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final s = sections[i];
+                    return ListTile(
+                      title: Text("CSE-${s['code']}"),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => _openSection(s['code'] as String),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+
+          // Server info & logs
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            color: Colors.grey.withOpacity(0.04),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Server: ${sessionActive ? '$serverIp:$serverPort' : 'Not running'}'),
+                if (lastReceivedAt != null) Text('Last received: ${DateFormat('yyyy-MM-dd HH:mm:ss').format(lastReceivedAt!)}'),
+                const SizedBox(height: 8),
+                const Text('Recent log:'),
+                const SizedBox(height: 6),
+                Container(
+                  height: 120,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    border: Border.all(color: Colors.grey.withOpacity(0.2)),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: _recentLogs.isEmpty
+                      ? const Text('No logs yet')
+                      : ListView.builder(itemCount: _recentLogs.length, itemBuilder: (context, idx) => Text(_recentLogs[idx], style: const TextStyle(fontSize: 12))),
                 ),
-              ),
-              const SizedBox(width: 16),
-              Container(
-                padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                decoration: BoxDecoration(
-                  color: Colors.black12,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.cloud_download_outlined,
-                        color: Colors.white70, size: 20),
-                    const SizedBox(width: 8),
-                    Text(
-                      "$receivedRecordsTotal Rec",
-                      style: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildActionButtons() {
-    return Row(
-      children: [
-        Expanded(
-          child: _ActionCard(
-            title: 'Weekly Report',
-            subtitle: 'Download PDF',
-            icon: Icons.picture_as_pdf_rounded,
-            color: Colors.green,
-            onTap: _generateAllSectionsWeeklyPdf,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _ActionCard(
-            title: 'Cumulative',
-            subtitle: 'View Analytics',
-            icon: Icons.analytics_rounded,
-            color: Colors.orange,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                    builder: (_) => CumulativeReportPage(date: date)),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSectionList() {
-    return FutureBuilder<List<Map<String, dynamic>>>(
-      future: DBHelper().getSections(),
-      builder: (context, snap) {
-        if (!snap.hasData)
-          return const Center(child: CircularProgressIndicator());
-        final sections = snap.data!;
-        if (sections.isEmpty) {
-          return const Center(child: Text('No sections available'));
-        }
-        return ListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: sections.length,
-          itemBuilder: (_, i) {
-            final s = sections[i];
-            return Card(
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: Colors.grey.shade300)),
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: Colors.indigo.shade50,
-                  child: Text(s['code'].substring(0, 1),
-                      style: const TextStyle(color: Colors.indigo)),
-                ),
-                title: Text("Section ${s['code']}",
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: const Text("Tap to view details"),
-                trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                onTap: () => _openSection(s['code'] as String),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildLogConsole() {
-    return Container(
-      height: 180,
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))
-        ],
-      ),
-      child: _recentLogs.isEmpty
-          ? Center(
-        child: Text(
-          'Waiting for connections...',
-          style: TextStyle(
-              color: Colors.grey.shade600, fontFamily: 'monospace'),
-        ),
-      )
-          : ListView.builder(
-        itemCount: _recentLogs.length,
-        itemBuilder: (context, idx) {
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Text(
-              _recentLogs[idx],
-              style: const TextStyle(
-                color: Color(0xFF00FF00), // Matrix Green
-                fontSize: 11,
-                fontFamily: 'monospace',
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _ActionCard extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-  final Color color;
-  final VoidCallback onTap;
-
-  const _ActionCard({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.grey.shade200),
-          boxShadow: [
-            BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 4))
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(icon, color: color, size: 24),
-            ),
-            const SizedBox(height: 12),
-            Text(title,
-                style:
-                const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            Text(subtitle,
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-          ],
-        ),
       ),
     );
   }
@@ -985,6 +672,9 @@ class CoordinatorSectionDetailPage extends StatefulWidget {
 
 class _CoordinatorSectionDetailPageState
     extends State<CoordinatorSectionDetailPage> {
+  // FIXED: Declared _server variable here
+  ServerSocket? _server;
+
   List<Map<String, dynamic>> rows = [];
   Map<String, dynamic> summary = {
     'total': 0,
@@ -999,6 +689,42 @@ class _CoordinatorSectionDetailPageState
   void initState() {
     super.initState();
     _load();
+    _initWifiDirect();
+  }
+
+  @override
+  void dispose() {
+    // FIXED: Close server when leaving page
+    _server?.close();
+    super.dispose();
+  }
+
+  Future<void> _startServer() async {
+    try {
+      // 0 uses any available port, or specify a port like 4040
+      _server = await ServerSocket.bind(InternetAddress.anyIPv4, 4040);
+
+      _server?.listen((Socket client) {
+        // FIXED: Replaced undefined 'handleClient' with proper listener logic
+        client.cast<List<int>>().transform(utf8.decoder).listen((payload) {
+          debugPrint("Payload received in section view: $payload");
+          // Add processing logic here if needed, or rely on Home Page server
+        });
+      });
+
+      setState(() {
+        // Update UI to show server is running
+      });
+    } catch (e) {
+      print("Error starting server: $e");
+    }
+  }
+
+  Future<void> _initWifiDirect() async {
+    // Ensure WifiDirectHelper is defined in your imports
+    await WifiDirectHelper.createGroup();      // phone becomes GO
+    await WifiDirectHelper.startDiscovery();   // optional – lets advisors see it
+    await _startServer();                // your existing socket server
   }
 
   Future<void> _load() async {
@@ -1016,7 +742,6 @@ class _CoordinatorSectionDetailPageState
     }
   }
 
-  // ... (Reuse _computeWeekRange and _generateWeeklyReport from your original logic) ...
   List<DateTime> _computeWeekRange(String isoDate) {
     final dt = DateTime.parse(isoDate);
     final monday = dt.subtract(Duration(days: dt.weekday - 1));

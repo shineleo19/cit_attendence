@@ -1,10 +1,12 @@
+// lib/advisor.dart
+import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:http/http.dart' as http;
 import 'package:printing/printing.dart';
 import 'db_helper.dart';
 import 'weekly_report.dart';
+import 'wifi_direct_helper.dart';
 
 class AdvisorHomePage extends StatefulWidget {
   final String username;
@@ -20,18 +22,28 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
   @override
   void initState() {
     super.initState();
+    // Try to start discovery silently when opening the app
+    _initDiscovery();
     _sectionsFuture = DBHelper().getSectionsForUser(widget.username);
   }
 
-  // --- ADDED: Clear Data Dialog Logic ---
+  Future<void> _initDiscovery() async {
+    try {
+      await WifiDirectHelper.initialize();
+      await WifiDirectHelper.startDiscovery();
+    } catch (e) {
+      debugPrint("Discovery init error (non-fatal): $e");
+    }
+  }
+
+  // --- Clear Data Dialog Logic ---
   void _showClearDataDialog(BuildContext context) {
     final TextEditingController confirmController = TextEditingController();
     showDialog(
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Row(
             children: [
               Icon(Icons.warning_amber_rounded, color: Colors.red),
@@ -92,7 +104,6 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
     );
   }
 
-  // ... (Existing logic methods) ...
   List<DateTime> _computeWeekRangeForDate(DateTime dt) {
     final monday = dt.subtract(Duration(days: dt.weekday - 1));
     return List.generate(6, (i) => monday.add(Duration(days: i)));
@@ -100,12 +111,10 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
 
   Future<void> _generateSectionWeeklyPdf(String sectionCode) async {
     try {
-      await DBHelper()
-          .importStudentsFromAsset('assets/data/students_master.xlsx');
+      await DBHelper().importStudentsFromAsset('assets/data/students_master.xlsx');
     } catch (e) {}
     try {
-      await DBHelper()
-          .importStudentsFromExcel('/mnt/data/students_master.xlsx');
+      await DBHelper().importStudentsFromExcel('/mnt/data/students_master.xlsx');
     } catch (e) {}
 
     final today = DateTime.now();
@@ -132,22 +141,16 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
       final status = r['status'] as String?;
       if (dateKey != null && status != null) {
         String shortStatus;
-        if (status == 'Present')
-          shortStatus = 'P';
-        else if (status == 'Absent')
-          shortStatus = 'A';
-        else if (status == 'OD')
-          shortStatus = 'OD';
-        else
-          shortStatus = '-';
-        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] =
-            shortStatus;
+        if (status == 'Present') shortStatus = 'P';
+        else if (status == 'Absent') shortStatus = 'A';
+        else if (status == 'OD') shortStatus = 'OD';
+        else shortStatus = '-';
+        (studentMap[sid]!['daily'] as Map<String, String>)[dateKey] = shortStatus;
       }
     }
 
     final students = studentMap.values.toList()
-      ..sort((a, b) =>
-          (a['reg_no'] as String).compareTo(b['reg_no'] as String));
+      ..sort((a, b) => (a['reg_no'] as String).compareTo(b['reg_no'] as String));
 
     final pdfBytes = await WeeklyReport.generateForSection(
       sectionCode: sectionCode,
@@ -155,10 +158,8 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
       students: students,
     );
 
-    final filename =
-        'weekly_report_${sectionCode}_${DateFormat('yyyyMMdd').format(weekDates.first)}.pdf';
-    await Printing.layoutPdf(
-        onLayout: (format) async => pdfBytes, name: filename);
+    final filename = 'weekly_report_${sectionCode}_${DateFormat('yyyyMMdd').format(weekDates.first)}.pdf';
+    await Printing.layoutPdf(onLayout: (format) async => pdfBytes, name: filename);
   }
 
   @override
@@ -168,7 +169,6 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
         title: const Text('My Sections'),
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
-        // --- ADDED: Action Button for Clear Data ---
         actions: [
           IconButton(
             tooltip: "Clear Data",
@@ -180,9 +180,7 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
       body: FutureBuilder(
         future: _sectionsFuture,
         builder: (context, snap) {
-          if (!snap.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
+          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
           final sections = snap.data as List<Map<String, dynamic>>;
 
           if (sections.isEmpty) {
@@ -190,11 +188,9 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.class_outlined,
-                      size: 64, color: Colors.grey.shade400),
+                  Icon(Icons.class_outlined, size: 64, color: Colors.grey.shade400),
                   const SizedBox(height: 16),
-                  Text("No sections assigned",
-                      style: TextStyle(color: Colors.grey.shade600)),
+                  Text("No sections assigned", style: TextStyle(color: Colors.grey.shade600)),
                 ],
               ),
             );
@@ -208,13 +204,11 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
               return Card(
                 elevation: 2,
                 margin: const EdgeInsets.only(bottom: 16),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(16),
                   onTap: () async {
-                    final students =
-                    await DBHelper().getStudentsBySectionCode(s['code']);
+                    final students = await DBHelper().getStudentsBySectionCode(s['code']);
                     if (!context.mounted) return;
                     Navigator.push(
                       context,
@@ -233,45 +227,24 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
                       children: [
                         Container(
                           padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.indigo.shade50,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.people_alt_rounded,
-                              color: Colors.indigo),
+                          decoration: BoxDecoration(color: Colors.indigo.shade50, shape: BoxShape.circle),
+                          child: const Icon(Icons.people_alt_rounded, color: Colors.indigo),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                "Class CSE-${s['code']}",
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
+                              Text("Class CSE-${s['code']}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                               const SizedBox(height: 4),
-                              Text(
-                                "Tap to take attendance",
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey.shade600),
-                              ),
+                              Text("Tap to take attendance", style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
                             ],
                           ),
                         ),
-                        Column(
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.picture_as_pdf_rounded,
-                                  color: Colors.redAccent),
-                              tooltip: 'Download Report',
-                              onPressed: () =>
-                                  _generateSectionWeeklyPdf(s['code']),
-                            ),
-                          ],
+                        IconButton(
+                          icon: const Icon(Icons.picture_as_pdf_rounded, color: Colors.redAccent),
+                          tooltip: 'Download Report',
+                          onPressed: () => _generateSectionWeeklyPdf(s['code']),
                         ),
                       ],
                     ),
@@ -312,9 +285,8 @@ class _AdvisorPageState extends State<AdvisorPage> {
   Map<String, String> status = {};
   Map<String, String> odStatus = {};
 
-  final TextEditingController _ipController = TextEditingController();
-  final TextEditingController _portController =
-  TextEditingController(text: "4040");
+  final TextEditingController _ipController = TextEditingController(text: '192.168.49.1');
+  final TextEditingController _portController = TextEditingController(text: '4040');
   bool isSubmitting = false;
 
   @override
@@ -330,8 +302,19 @@ class _AdvisorPageState extends State<AdvisorPage> {
     }
   }
 
-  // Note: I removed the misplaced _showClearDataDialog from here
-  // since it is now correctly placed in AdvisorHomePage
+  // --- 1. The Missing Helper Method ---
+  void _showMessage(String msg, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
 
   Future<void> _saveLocally() async {
     try {
@@ -355,19 +338,77 @@ class _AdvisorPageState extends State<AdvisorPage> {
     }
   }
 
+  // --- 2. Auto-Connect Workflow ---
   Future<void> _submitToCoordinator() async {
-    if (_ipController.text.trim().isEmpty) {
-      _showMessage("⚠ Enter Coordinator IP", Colors.orange);
+    setState(() => isSubmitting = true);
+    await _saveLocally(); // Save first
+
+    // Check if user manually typed an IP different from default
+    // If they typed a custom IP (like Hotspot IP), use that directly.
+    final manualIp = _ipController.text.trim();
+    if (manualIp != '192.168.49.1' && manualIp.isNotEmpty) {
+      // User is likely using Hotspot, send directly
+      await _sendDataToIp(manualIp);
+      if(mounted) setState(() => isSubmitting = false);
       return;
     }
 
-    setState(() => isSubmitting = true);
+    try {
+      _showMessage("🔍 Auto-detecting Coordinator...", Colors.blue);
 
-    await _saveLocally();
+      // Try Auto-Connect logic
+      await _autoConnectAndSend();
 
-    final url =
-        "http://${_ipController.text.trim()}:${_portController.text.trim()}/submit_attendance";
+    } catch (e) {
+      // Fallback: If auto-connect fails, try sending to the IP in the box anyway
+      // (in case they are already connected via settings)
+      debugPrint("Auto-connect failed, trying direct send: $e");
+      try {
+        await _sendDataToIp('192.168.49.1');
+      } catch (e2) {
+        _showMessage("❌ Connection failed. Check settings.", Colors.red);
+      }
+    } finally {
+      if (mounted) setState(() => isSubmitting = false);
+    }
+  }
 
+  Future<void> _autoConnectAndSend() async {
+    // A. Discovery
+    await WifiDirectHelper.startDiscovery();
+    await Future.delayed(const Duration(seconds: 2));
+
+    // B. Get Peers
+    final peers = await WifiDirectHelper.getPeers();
+    if (peers.isEmpty) {
+      // If no peers found, we just return and let the code try the manual IP
+      throw Exception("No peers found");
+    }
+
+    // C. Connect to the first one (Coordinator)
+    final coordinator = peers.first;
+    _showMessage("🔗 Connecting to ${coordinator.deviceName}...", Colors.orange);
+
+    final connected = await WifiDirectHelper.connect(coordinator.deviceAddress);
+    if (!connected) throw Exception("Connection rejected");
+
+    // D. Wait for IP
+    _showMessage("⏳ Stabilizing...", Colors.blue);
+    await Future.delayed(const Duration(seconds: 3));
+
+    // E. Send
+    await _sendDataToIp('192.168.49.1');
+
+    // F. Disconnect
+    await Future.delayed(const Duration(seconds: 1));
+    await WifiDirectHelper.disconnect();
+    _showMessage("Disconnected.", Colors.grey);
+  }
+
+  Future<void> _sendDataToIp(String host) async {
+    final port = int.tryParse(_portController.text.trim()) ?? 4040;
+
+    // Prepare JSON
     final recordList = students.map((s) {
       final id = s['id'] as String;
       return {
@@ -384,48 +425,23 @@ class _AdvisorPageState extends State<AdvisorPage> {
       };
     }).toList();
 
-    final payload = {
-      "Date": DateFormat('yyyy-MM-dd').format(selectedDate),
-      "Slot": slot,
-      "Section": widget.section,
-      "Records": recordList,
+    final payloadMap = {
+      'type': 'ATT_DATA',
+      'Section': widget.section,
+      'Date': DateFormat('yyyy-MM-dd').format(selectedDate),
+      'Slot': slot,
+      'Records': recordList,
     };
+    final payload = jsonEncode(payloadMap);
 
-    try {
-      final response = await http
-          .post(
-        Uri.parse(url),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode(payload),
-      )
-          .timeout(const Duration(seconds: 5));
+    // Socket Send
+    final socket = await Socket.connect(host, port, timeout: const Duration(seconds: 5));
+    socket.add(utf8.encode(payload));
+    await socket.flush();
+    await socket.close();
 
-      if (response.statusCode == 200) {
-        _showMessage("✔ Attendance submitted!", Colors.green);
-        if (widget.onSubmitComplete != null) {
-          widget.onSubmitComplete!();
-        }
-      } else {
-        _showMessage(
-            "❌ Submit Failed (${response.statusCode})", Colors.redAccent);
-      }
-    } catch (e) {
-      _showMessage("❌ Connection Error: $e", Colors.redAccent);
-    } finally {
-      if (mounted) setState(() => isSubmitting = false);
-    }
-  }
-
-  void _showMessage(String msg, Color color) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
+    _showMessage('✔ Data Sent Successfully!', Colors.green);
+    widget.onSubmitComplete?.call();
   }
 
   void _toggleStatus(String id) {
@@ -461,12 +477,8 @@ class _AdvisorPageState extends State<AdvisorPage> {
       appBar: AppBar(
         title: Column(
           children: [
-            Text("Section ${widget.section}",
-                style: const TextStyle(fontSize: 16)),
-            Text(
-              "Absent: $absents | OD: $ods",
-              style: const TextStyle(fontSize: 12, color: Colors.white70),
-            ),
+            Text("Section ${widget.section}", style: const TextStyle(fontSize: 16)),
+            Text("Absent: $absents | OD: $ods", style: const TextStyle(fontSize: 12, color: Colors.white70)),
           ],
         ),
         backgroundColor: Colors.indigo,
@@ -494,19 +506,13 @@ class _AdvisorPageState extends State<AdvisorPage> {
         backgroundColor: isSubmitting ? Colors.grey : Colors.indigo,
         foregroundColor: Colors.white,
         icon: isSubmitting
-            ? const SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(
-                color: Colors.white, strokeWidth: 2))
+            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
             : const Icon(Icons.cloud_upload_rounded),
         label: Text(isSubmitting ? "Sending..." : "Submit"),
       ),
       body: Column(
         children: [
-          // Config Header Card
           _buildConfigHeader(),
-          // Student List
           Expanded(child: _buildStudentList()),
         ],
       ),
@@ -519,18 +525,12 @@ class _AdvisorPageState extends State<AdvisorPage> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: const BorderRadius.vertical(bottom: Radius.circular(20)),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 5)),
-        ],
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 5))],
       ),
       child: Column(
         children: [
           Row(
             children: [
-              // Date Picker
               Expanded(
                 flex: 3,
                 child: InkWell(
@@ -540,65 +540,38 @@ class _AdvisorPageState extends State<AdvisorPage> {
                       initialDate: selectedDate,
                       firstDate: DateTime(2020),
                       lastDate: DateTime(2100),
-                      builder: (ctx, child) {
-                        return Theme(
-                          data: Theme.of(ctx).copyWith(
-                            colorScheme: const ColorScheme.light(
-                              primary: Colors.indigo,
-                            ),
-                          ),
-                          child: child!,
-                        );
-                      },
+                      builder: (ctx, child) => Theme(
+                        data: Theme.of(ctx).copyWith(colorScheme: const ColorScheme.light(primary: Colors.indigo)),
+                        child: child!,
+                      ),
                     );
-                    if (picked != null) {
-                      setState(() => selectedDate = picked);
-                    }
+                    if (picked != null) setState(() => selectedDate = picked);
                   },
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 14),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey.shade300),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                    decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(12)),
                     child: Row(
                       children: [
-                        const Icon(Icons.calendar_today_rounded,
-                            size: 18, color: Colors.indigo),
+                        const Icon(Icons.calendar_today_rounded, size: 18, color: Colors.indigo),
                         const SizedBox(width: 8),
-                        Text(
-                          DateFormat('MMM dd, yyyy').format(selectedDate),
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
+                        Text(DateFormat('MMM dd, yyyy').format(selectedDate), style: const TextStyle(fontWeight: FontWeight.w600)),
                       ],
                     ),
                   ),
                 ),
               ),
               const SizedBox(width: 12),
-              // Slot Selector
               Expanded(
                 flex: 2,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.grey.shade300),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                  decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(12)),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
                       value: slot,
                       isExpanded: true,
-                      icon: const Icon(Icons.access_time_filled_rounded,
-                          color: Colors.indigo, size: 20),
-                      items: ["FN", "AN"].map((e) {
-                        return DropdownMenuItem(
-                            value: e,
-                            child: Text(e,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold)));
-                      }).toList(),
+                      icon: const Icon(Icons.access_time_filled_rounded, color: Colors.indigo, size: 20),
+                      items: ["FN", "AN"].map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontWeight: FontWeight.bold)))).toList(),
                       onChanged: (v) => setState(() => slot = v!),
                     ),
                   ),
@@ -607,13 +580,9 @@ class _AdvisorPageState extends State<AdvisorPage> {
             ],
           ),
           const SizedBox(height: 12),
-          // Coordinator IP
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(12),
-            ),
+            decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12)),
             child: Row(
               children: [
                 const Icon(Icons.wifi_tethering, color: Colors.grey),
@@ -624,10 +593,8 @@ class _AdvisorPageState extends State<AdvisorPage> {
                     keyboardType: TextInputType.number,
                     style: const TextStyle(fontSize: 14),
                     decoration: const InputDecoration(
-                      hintText: "Coordinator IP (e.g., 192.168.43.1)",
+                      hintText: "Coordinator IP (192.168.49.1)",
                       border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
                       contentPadding: EdgeInsets.symmetric(vertical: 12),
                     ),
                   ),
@@ -639,12 +606,7 @@ class _AdvisorPageState extends State<AdvisorPage> {
                     keyboardType: TextInputType.number,
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontSize: 14, color: Colors.grey),
-                    decoration: const InputDecoration(
-                      hintText: "Port",
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                    ),
+                    decoration: const InputDecoration(hintText: "Port", border: InputBorder.none),
                   ),
                 ),
               ],
@@ -665,7 +627,6 @@ class _AdvisorPageState extends State<AdvisorPage> {
         final isAbsent = status[id] == 'Absent';
         final isOD = odStatus[id] == 'OD';
 
-        // Dynamic color for the card border/status
         Color statusColor = Colors.green;
         if (isAbsent) statusColor = Colors.red;
         if (isOD) statusColor = Colors.blue;
@@ -674,88 +635,41 @@ class _AdvisorPageState extends State<AdvisorPage> {
           elevation: 0,
           color: Colors.white,
           margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: statusColor.withOpacity(0.5), width: 1),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: statusColor.withOpacity(0.5), width: 1)),
           child: InkWell(
             borderRadius: BorderRadius.circular(12),
-            onTap: () => _toggleStatus(id), // Quick toggle attendance
+            onTap: () => _toggleStatus(id),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  // Avatar / Status Indicator
                   Container(
                     width: 45,
                     height: 45,
-                    decoration: BoxDecoration(
-                      color: statusColor.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Center(
-                      child: Text(
-                        isAbsent ? "A" : (isOD ? "OD" : "P"),
-                        style: TextStyle(
-                            color: statusColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 18),
-                      ),
-                    ),
+                    decoration: BoxDecoration(color: statusColor.withOpacity(0.1), shape: BoxShape.circle),
+                    child: Center(child: Text(isAbsent ? "A" : (isOD ? "OD" : "P"), style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 18))),
                   ),
                   const SizedBox(width: 16),
-                  // Details
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          s['name'],
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            decoration:
-                            isAbsent ? TextDecoration.lineThrough : null,
-                            color: isAbsent ? Colors.grey : Colors.black87,
-                          ),
-                        ),
+                        Text(s['name'], style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, decoration: isAbsent ? TextDecoration.lineThrough : null, color: isAbsent ? Colors.grey : Colors.black87)),
                         const SizedBox(height: 4),
                         Row(
                           children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.grey.shade200,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(s['reg_no'],
-                                  style: const TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.bold)),
-                            ),
+                            Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.grey.shade200, borderRadius: BorderRadius.circular(4)), child: Text(s['reg_no'], style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
                             const SizedBox(width: 8),
-                            Text("${s['gender']} • ${s['quota']}",
-                                style: const TextStyle(
-                                    fontSize: 12, color: Colors.grey)),
+                            Text("${s['gender']} • ${s['quota']}", style: const TextStyle(fontSize: 12, color: Colors.grey)),
                           ],
                         ),
                       ],
                     ),
                   ),
-                  // OD Toggle Button
                   Column(
                     children: [
-                      Text("OD",
-                          style: TextStyle(
-                              fontSize: 10,
-                              color: isOD ? Colors.blue : Colors.grey)),
-                      Switch(
-                        value: isOD,
-                        activeColor: Colors.blue,
-                        onChanged: (val) => _toggleOD(id),
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
+                      Text("OD", style: TextStyle(fontSize: 10, color: isOD ? Colors.blue : Colors.grey)),
+                      Switch(value: isOD, activeColor: Colors.blue, onChanged: (val) => _toggleOD(id), materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
                     ],
                   ),
                 ],
@@ -771,8 +685,7 @@ class _AdvisorPageState extends State<AdvisorPage> {
 class AdvisorReportPage extends StatefulWidget {
   final String sectionCode;
   final String date;
-  const AdvisorReportPage(
-      {super.key, required this.sectionCode, required this.date});
+  const AdvisorReportPage({super.key, required this.sectionCode, required this.date});
 
   @override
   State<AdvisorReportPage> createState() => _AdvisorReportPageState();
@@ -780,13 +693,7 @@ class AdvisorReportPage extends StatefulWidget {
 
 class _AdvisorReportPageState extends State<AdvisorReportPage> {
   List<Map<String, dynamic>> rows = [];
-  Map<String, dynamic> summary = {
-    'total': 0,
-    'present': 0,
-    'absent': 0,
-    'od': 0,
-    'percent': 0.0
-  };
+  Map<String, dynamic> summary = {'total': 0, 'present': 0, 'absent': 0, 'od': 0, 'percent': 0.0};
 
   @override
   void initState() {
@@ -795,10 +702,8 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
   }
 
   Future<void> _load() async {
-    rows = await DBHelper()
-        .getAttendanceForSectionByDate(widget.sectionCode, widget.date);
-    summary =
-    await DBHelper().getSectionSummary(widget.sectionCode, widget.date);
+    rows = await DBHelper().getAttendanceForSectionByDate(widget.sectionCode, widget.date);
+    summary = await DBHelper().getSectionSummary(widget.sectionCode, widget.date);
     if (mounted) setState(() {});
   }
 
@@ -806,11 +711,7 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
-      appBar: AppBar(
-        title: Text('Report: CSE-${widget.sectionCode}'),
-        backgroundColor: Colors.indigo,
-        foregroundColor: Colors.white,
-      ),
+      appBar: AppBar(title: Text('Report: CSE-${widget.sectionCode}'), backgroundColor: Colors.indigo, foregroundColor: Colors.white),
       body: Column(
         children: [
           _buildSummaryCard(),
@@ -821,40 +722,19 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
               separatorBuilder: (_, __) => const SizedBox(height: 8),
               itemBuilder: (_, i) {
                 final r = rows[i];
-                final status = r['status'] == 'Absent'
-                    ? 'Absent'
-                    : (r['od_status'] == 'OD' ? 'OD' : 'Present');
-
+                final status = r['status'] == 'Absent' ? 'Absent' : (r['od_status'] == 'OD' ? 'OD' : 'Present');
                 Color color = Colors.green;
                 IconData icon = Icons.check_circle_outline;
-                if (status == 'Absent') {
-                  color = Colors.red;
-                  icon = Icons.cancel_outlined;
-                } else if (status == 'OD') {
-                  color = Colors.blue;
-                  icon = Icons.school_outlined;
-                }
+                if (status == 'Absent') { color = Colors.red; icon = Icons.cancel_outlined; }
+                else if (status == 'OD') { color = Colors.blue; icon = Icons.school_outlined; }
 
                 return Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
                   child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: color.withOpacity(0.1),
-                      child: Icon(icon, color: color, size: 20),
-                    ),
-                    title: Text(r['name'] ?? '',
-                        style: const TextStyle(fontWeight: FontWeight.w500)),
+                    leading: CircleAvatar(backgroundColor: color.withOpacity(0.1), child: Icon(icon, color: color, size: 20)),
+                    title: Text(r['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w500)),
                     subtitle: Text(r['reg_no'] ?? ''),
-                    trailing: Text(
-                      status.toUpperCase(),
-                      style: TextStyle(
-                          color: color,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12),
-                    ),
+                    trailing: Text(status.toUpperCase(), style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)),
                   ),
                 );
               },
@@ -869,15 +749,7 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
     return Container(
       margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-            colors: [Color(0xFF5C6BC0), Color(0xFF3949AB)]),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: const [
-          BoxShadow(
-              color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
-        ],
-      ),
+      decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF5C6BC0), Color(0xFF3949AB)]), borderRadius: BorderRadius.circular(20), boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4))]),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -887,17 +759,8 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
           _statItem("OD", "${summary['od']}"),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text(
-              "${(summary['percent'] as double).toStringAsFixed(1)}%",
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16),
-            ),
+            decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(20)),
+            child: Text("${(summary['percent'] as double).toStringAsFixed(1)}%", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
           ),
         ],
       ),
@@ -907,13 +770,8 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
   Widget _statItem(String label, String value) {
     return Column(
       children: [
-        Text(value,
-            style: const TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.bold)),
-        Text(label,
-            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        Text(value, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+        Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
       ],
     );
   }

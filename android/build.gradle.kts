@@ -1,3 +1,4 @@
+import com.android.build.gradle.LibraryExtension
 
 allprojects {
     repositories {
@@ -16,6 +17,17 @@ subprojects {
 
 subprojects {
     project.evaluationDependsOn(":app")
+}
+
+subprojects {
+    plugins.withId("com.android.library") {
+        if (project.name == "flutter_p2p_connection") {
+            extensions.configure<LibraryExtension> {
+                // FIXED: Use the exact original package name
+                namespace = "com.ugo.studio.plugins.flutter_p2p_connection"
+            }
+        }
+    }
 }
 
 tasks.register<Delete>("clean") {

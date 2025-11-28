@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:printing/printing.dart';
+import 'weekly_report.dart';
 import 'db_helper.dart';
 import 'coordinator.dart'; // We reuse the detail page from coordinator
 
@@ -58,6 +60,33 @@ class _HodHomePageState extends State<HodHomePage> {
       _loadReport();
     }
   }
+  Future<void> _generateAbsenteePdf() async {
+    final dateStr = DateFormat('yyyy-MM-dd').format(selectedDate);
+
+    // 1. Get Data
+    final absentees = await DBHelper().getAbsentStudentsByDate(dateStr);
+
+    if (absentees.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("No absent students found for this date."))
+      );
+      return;
+    }
+
+    // 2. Generate PDF
+    final pdfBytes = await WeeklyReport.generateAbsenteeReport(
+      date: DateFormat('dd MMM yyyy').format(selectedDate),
+      absentees: absentees,
+    );
+
+    // 3. Show/Print
+    await Printing.layoutPdf(
+      onLayout: (format) async => pdfBytes,
+      name: 'absentee_report_$dateStr.pdf',
+    );
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -73,7 +102,13 @@ class _HodHomePageState extends State<HodHomePage> {
         centerTitle: true,
         actions: [
           IconButton(
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            tooltip: "Absentee Report",
+            onPressed: _generateAbsenteePdf,
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh),
+            tooltip: "Refresh Data",
             onPressed: _loadReport,
           ),
         ],

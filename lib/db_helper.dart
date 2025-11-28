@@ -42,6 +42,22 @@ class DBHelper {
     );
   }
 
+  Future<List<Map<String, dynamic>>> getAbsentStudentsByDate(String date) async {
+    final db = await database;
+    final sql = '''
+      SELECT 
+        st.reg_no, 
+        st.name, 
+        sec.code as section_code 
+      FROM attendance_records ar
+      INNER JOIN students st ON st.id = ar.student_id
+      INNER JOIN sections sec ON sec.id = st.section_id
+      WHERE ar.date = ? AND ar.status = 'Absent'
+      ORDER BY sec.code ASC, st.reg_no ASC;
+    ''';
+    return db.rawQuery(sql, [date]);
+  }
+
   Future<void> _createTables(Database db) async {
     await db.execute('''
       CREATE TABLE users (
