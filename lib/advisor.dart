@@ -1,12 +1,11 @@
-// lib/advisor.dart
 import 'dart:io';
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:printing/printing.dart';
 import 'db_helper.dart';
 import 'weekly_report.dart';
-import 'wifi_direct_helper.dart';
 
 class AdvisorHomePage extends StatefulWidget {
   final String username;
@@ -22,21 +21,10 @@ class _AdvisorHomePageState extends State<AdvisorHomePage> {
   @override
   void initState() {
     super.initState();
-    // Try to start discovery silently when opening the app
-    _initDiscovery();
     _sectionsFuture = DBHelper().getSectionsForUser(widget.username);
   }
 
-  Future<void> _initDiscovery() async {
-    try {
-      await WifiDirectHelper.initialize();
-      await WifiDirectHelper.startDiscovery();
-    } catch (e) {
-      debugPrint("Discovery init error (non-fatal): $e");
-    }
-  }
-
-  // --- Clear Data Dialog Logic ---
+  // --- Clear Data Dialog ---
   void _showClearDataDialog(BuildContext context) {
     final TextEditingController confirmController = TextEditingController();
     showDialog(
@@ -285,7 +273,7 @@ class _AdvisorPageState extends State<AdvisorPage> {
   Map<String, String> status = {};
   Map<String, String> odStatus = {};
 
-  final TextEditingController _ipController = TextEditingController(text: '192.168.49.1');
+  final TextEditingController _ipController = TextEditingController(); // Empty for Auto-Detect
   final TextEditingController _portController = TextEditingController(text: '4040');
   bool isSubmitting = false;
 
@@ -300,20 +288,6 @@ class _AdvisorPageState extends State<AdvisorPage> {
       status[id] = 'Present';
       odStatus[id] = 'Normal';
     }
-  }
-
-  // --- 1. The Missing Helper Method ---
-  void _showMessage(String msg, Color color) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
   }
 
   Future<void> _saveLocally() async {
@@ -338,77 +312,93 @@ class _AdvisorPageState extends State<AdvisorPage> {
     }
   }
 
-  // --- 2. Auto-Connect Workflow ---
+  // --- Auto-Detect Logic (Hotspot Mode) ---
   Future<void> _submitToCoordinator() async {
     setState(() => isSubmitting = true);
-    await _saveLocally(); // Save first
+    await _saveLocally();
 
-    // Check if user manually typed an IP different from default
-    // If they typed a custom IP (like Hotspot IP), use that directly.
-    final manualIp = _ipController.text.trim();
-    if (manualIp != '192.168.49.1' && manualIp.isNotEmpty) {
-      // User is likely using Hotspot, send directly
-      await _sendDataToIp(manualIp);
-      if(mounted) setState(() => isSubmitting = false);
-      return;
-    }
+    // 1. Show Searching Dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const AlertDialog(
+        content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text("Finding Coordinator...")
+            ]
+        ),
+      ),
+    );
 
     try {
-      _showMessage("🔍 Auto-detecting Coordinator...", Colors.blue);
+      String? targetIP = _ipController.text.trim();
 
-      // Try Auto-Connect logic
-      await _autoConnectAndSend();
-
-    } catch (e) {
-      // Fallback: If auto-connect fails, try sending to the IP in the box anyway
-      // (in case they are already connected via settings)
-      debugPrint("Auto-connect failed, trying direct send: $e");
-      try {
-        await _sendDataToIp('192.168.49.1');
-      } catch (e2) {
-        _showMessage("❌ Connection failed. Check settings.", Colors.red);
+      // If manual IP is empty, use Auto-Discovery
+      if (targetIP.isEmpty) {
+        targetIP = await _findCoordinatorIP();
       }
+
+      if (targetIP != null && targetIP.isNotEmpty) {
+        // 2. Found! Send Data
+        await _sendDataToIp(targetIP);
+      } else {
+        throw Exception("Coordinator not found.\nEnsure you are connected to the Hotspot.");
+      }
+    } catch (e) {
+      if(mounted) _showMessage("Error: $e", Colors.red);
     } finally {
-      if (mounted) setState(() => isSubmitting = false);
+      if(mounted) {
+        Navigator.pop(context); // Close dialog
+        setState(() => isSubmitting = false);
+      }
     }
   }
 
-  Future<void> _autoConnectAndSend() async {
-    // A. Discovery
-    await WifiDirectHelper.startDiscovery();
-    await Future.delayed(const Duration(seconds: 2));
+  /// Sends UDP Broadcast to find the server
+  Future<String?> _findCoordinatorIP() async {
+    RawDatagramSocket? socket;
+    try {
+      socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      socket.broadcastEnabled = true;
 
-    // B. Get Peers
-    final peers = await WifiDirectHelper.getPeers();
-    if (peers.isEmpty) {
-      // If no peers found, we just return and let the code try the manual IP
-      throw Exception("No peers found");
+      // Broadcast on Port 4041
+      final data = utf8.encode("WHO_IS_COORDINATOR");
+      socket.send(data, InternetAddress('255.255.255.255'), 4041);
+
+      final completer = Completer<String?>();
+
+      // Listen for reply
+      final subscription = socket.listen((RawSocketEvent e) {
+        if (e == RawSocketEvent.read) {
+          Datagram? dg = socket?.receive();
+          if (dg != null) {
+            String msg = utf8.decode(dg.data).trim();
+            if (msg == "I_AM_COORDINATOR") {
+              if (!completer.isCompleted) completer.complete(dg.address.address);
+            }
+          }
+        }
+      });
+
+      // Timeout after 2 seconds
+      Future.delayed(const Duration(seconds: 2), () {
+        if (!completer.isCompleted) completer.complete(null);
+      });
+
+      return await completer.future;
+    } catch (e) {
+      debugPrint("UDP Error: $e");
+      return null;
+    } finally {
+      socket?.close();
     }
-
-    // C. Connect to the first one (Coordinator)
-    final coordinator = peers.first;
-    _showMessage("🔗 Connecting to ${coordinator.deviceName}...", Colors.orange);
-
-    final connected = await WifiDirectHelper.connect(coordinator.deviceAddress);
-    if (!connected) throw Exception("Connection rejected");
-
-    // D. Wait for IP
-    _showMessage("⏳ Stabilizing...", Colors.blue);
-    await Future.delayed(const Duration(seconds: 3));
-
-    // E. Send
-    await _sendDataToIp('192.168.49.1');
-
-    // F. Disconnect
-    await Future.delayed(const Duration(seconds: 1));
-    await WifiDirectHelper.disconnect();
-    _showMessage("Disconnected.", Colors.grey);
   }
 
   Future<void> _sendDataToIp(String host) async {
     final port = int.tryParse(_portController.text.trim()) ?? 4040;
 
-    // Prepare JSON
     final recordList = students.map((s) {
       final id = s['id'] as String;
       return {
@@ -425,16 +415,14 @@ class _AdvisorPageState extends State<AdvisorPage> {
       };
     }).toList();
 
-    final payloadMap = {
+    final payload = jsonEncode({
       'type': 'ATT_DATA',
       'Section': widget.section,
       'Date': DateFormat('yyyy-MM-dd').format(selectedDate),
       'Slot': slot,
       'Records': recordList,
-    };
-    final payload = jsonEncode(payloadMap);
+    });
 
-    // Socket Send
     final socket = await Socket.connect(host, port, timeout: const Duration(seconds: 5));
     socket.add(utf8.encode(payload));
     await socket.flush();
@@ -442,6 +430,19 @@ class _AdvisorPageState extends State<AdvisorPage> {
 
     _showMessage('✔ Data Sent Successfully!', Colors.green);
     widget.onSubmitComplete?.call();
+  }
+
+  void _showMessage(String msg, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: color,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
   }
 
   void _toggleStatus(String id) {
@@ -593,7 +594,7 @@ class _AdvisorPageState extends State<AdvisorPage> {
                     keyboardType: TextInputType.number,
                     style: const TextStyle(fontSize: 14),
                     decoration: const InputDecoration(
-                      hintText: "Coordinator IP (192.168.49.1)",
+                      hintText: "Auto-detect (or type IP)",
                       border: InputBorder.none,
                       contentPadding: EdgeInsets.symmetric(vertical: 12),
                     ),
@@ -711,7 +712,11 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
-      appBar: AppBar(title: Text('Report: CSE-${widget.sectionCode}'), backgroundColor: Colors.indigo, foregroundColor: Colors.white),
+      appBar: AppBar(
+          title: Text('Report: CSE-${widget.sectionCode}'),
+          backgroundColor: Colors.indigo,
+          foregroundColor: Colors.white
+      ),
       body: Column(
         children: [
           _buildSummaryCard(),
@@ -719,19 +724,20 @@ class _AdvisorReportPageState extends State<AdvisorReportPage> {
             child: ListView.separated(
               padding: const EdgeInsets.all(16),
               itemCount: rows.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 8),
-              itemBuilder: (_, i) {
+              separatorBuilder: (context, index) => const SizedBox(height: 8),
+              itemBuilder: (context, i) {
                 final r = rows[i];
                 final status = r['status'] == 'Absent' ? 'Absent' : (r['od_status'] == 'OD' ? 'OD' : 'Present');
-                Color color = Colors.green;
-                IconData icon = Icons.check_circle_outline;
-                if (status == 'Absent') { color = Colors.red; icon = Icons.cancel_outlined; }
-                else if (status == 'OD') { color = Colors.blue; icon = Icons.school_outlined; }
+                Color color = status == 'Absent' ? Colors.red : (status == 'OD' ? Colors.blue : Colors.green);
+                IconData icon = status == 'Absent' ? Icons.cancel_outlined : (status == 'OD' ? Icons.school_outlined : Icons.check_circle_outline);
 
                 return Container(
                   decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
                   child: ListTile(
-                    leading: CircleAvatar(backgroundColor: color.withOpacity(0.1), child: Icon(icon, color: color, size: 20)),
+                    leading: CircleAvatar(
+                        backgroundColor: color.withOpacity(0.1),
+                        child: Icon(icon, color: color, size: 20)
+                    ),
                     title: Text(r['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w500)),
                     subtitle: Text(r['reg_no'] ?? ''),
                     trailing: Text(status.toUpperCase(), style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12)),
